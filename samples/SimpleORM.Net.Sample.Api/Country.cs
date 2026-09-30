@@ -7,6 +7,7 @@ namespace SimpleORM.Net.Sample.Api;
 /// Demonstrates a shared model that does not belong to any tenant.
 /// </summary>
 [Global]
+
 public sealed class Country : DBModel
 {
     /// <summary>Gets or sets the country name.</summary>

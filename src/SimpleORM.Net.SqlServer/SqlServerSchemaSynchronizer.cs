@@ -1,6 +1,7 @@
 using System.Globalization;
 using Microsoft.Data.SqlClient;
 using SimpleORM.Net.Abstractions;
+using SimpleORM.Net.Attributes;
 using SimpleORM.Net.Configuration;
 using SimpleORM.Net.Metadata;
 using SimpleORM.Net.Models;
@@ -284,10 +285,11 @@ public sealed class SqlServerSchemaSynchronizer : IDBSchemaSynchronizer
             model.TableName,
             cancellationToken);
 
-        if (currentPrimaryKeyColumns.Count == 1
-            && currentPrimaryKeyColumns[0].Equals(
-                model.CodeColumn.ColumnName,
-                StringComparison.OrdinalIgnoreCase))
+        var desiredPrimaryKeyColumns = model.TenantScoped && model.TenantColumn is not null
+            ? new[] { model.TenantColumn.ColumnName, model.CodeColumn.ColumnName }
+            : new[] { model.CodeColumn.ColumnName };
+
+        if (currentPrimaryKeyColumns.SequenceEqual(desiredPrimaryKeyColumns, StringComparer.OrdinalIgnoreCase))
         {
             return;
         }
@@ -327,7 +329,7 @@ public sealed class SqlServerSchemaSynchronizer : IDBSchemaSynchronizer
         var createSql = $"""
                          ALTER TABLE [{EscapeIdentifier(model.TableName)}]
                          ADD CONSTRAINT [{EscapeIdentifier(constraintName)}]
-                         PRIMARY KEY ([{EscapeIdentifier(model.CodeColumn.ColumnName)}]);
+                         PRIMARY KEY ({string.Join(", ", desiredPrimaryKeyColumns.Select(column => $"[{EscapeIdentifier(column)}]"))});
                          """;
 
         await ExecuteSchemaChange(
@@ -358,7 +360,7 @@ public sealed class SqlServerSchemaSynchronizer : IDBSchemaSynchronizer
                 out var existing);
 
             if (hasExistingIndex
-                && existing.Unique
+                && existing.Unique == desired.Unique
                 && existing.Columns.SequenceEqual(
                     desired.Columns,
                     StringComparer.OrdinalIgnoreCase))
@@ -384,18 +386,22 @@ public sealed class SqlServerSchemaSynchronizer : IDBSchemaSynchronizer
 
             var columnList = string.Join(
                 ", ",
-                desired.Columns.Select(
-                    column => $"[{EscapeIdentifier(column)}]"));
+                desired.Columns.Select(column =>
+                {
+                    var direction = GetIndexDirection(model, desired.Name, column);
+                    return $"[{EscapeIdentifier(column)}] {(direction == IndexDirection.Descending ? "DESC" : "ASC")}";
+                }));
 
+            var uniqueKeyword = desired.Unique ? "UNIQUE " : string.Empty;
             var createSql = $"""
-                             CREATE UNIQUE INDEX [{EscapeIdentifier(desired.Name)}]
+                             CREATE {uniqueKeyword}INDEX [{EscapeIdentifier(desired.Name)}]
                              ON [{EscapeIdentifier(model.TableName)}] ({columnList});
                              """;
 
             await ExecuteSchemaChange(
                 connection,
                 model.ModelName,
-                "CreateUniqueIndex",
+                desired.Unique ? "CreateUniqueIndex" : "CreateIndex",
                 desired.Name,
                 createSql,
                 cancellationToken);
@@ -431,43 +437,38 @@ public sealed class SqlServerSchemaSynchronizer : IDBSchemaSynchronizer
     private static IReadOnlyDictionary<string, (string Name, bool Unique, IReadOnlyList<string> Columns)> BuildDesiredUniqueIndexes(
         DBModelMetadata model)
     {
-        var indexes = new Dictionary<
-            string,
-            (string Name, bool Unique, IReadOnlyList<string> Columns)>(
-            StringComparer.OrdinalIgnoreCase);
+        var indexes = new Dictionary<string, (string Name, bool Unique, IReadOnlyList<string> Columns)>(StringComparer.OrdinalIgnoreCase);
+        var tenantPrefix = model.TenantScoped && model.TenantColumn is not null
+            ? new[] { model.TenantColumn.ColumnName }
+            : Array.Empty<string>();
 
-        foreach (var column in model.PersistedColumns
-                     .Where(item => item.Unique && !item.IsCode)
-                     .Where(item => string.IsNullOrWhiteSpace(item.UniqueGroup)))
+        foreach (var column in model.PersistedColumns.Where(item => item.Unique && !item.IsCode).Where(item => string.IsNullOrWhiteSpace(item.UniqueGroup)))
         {
-            var name = BuildUniqueIndexName(
-                model.TableName,
-                column.ColumnName);
-
-            indexes[name] = (
-                Name: name,
-                Unique: true,
-                Columns: new[] { column.ColumnName });
+            var name = BuildUniqueIndexName(model.TableName, column.ColumnName);
+            indexes[name] = (name, true, tenantPrefix.Concat(new[] { column.ColumnName }).Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
         }
 
-        foreach (var group in model.PersistedColumns
-                     .Where(item => item.Unique && !string.IsNullOrWhiteSpace(item.UniqueGroup))
-                     .GroupBy(
-                         item => item.UniqueGroup!,
-                         StringComparer.OrdinalIgnoreCase))
+        foreach (var group in model.PersistedColumns.Where(item => item.Unique && !string.IsNullOrWhiteSpace(item.UniqueGroup)).GroupBy(item => item.UniqueGroup!, StringComparer.OrdinalIgnoreCase))
         {
-            var columns = group
-                .Select(item => item.ColumnName)
-                .ToArray();
+            var name = BuildCompositeUniqueIndexName(model.TableName, group.Key);
+            indexes[name] = (name, true, tenantPrefix.Concat(group.Select(item => item.ColumnName)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+        }
 
-            var name = BuildCompositeUniqueIndexName(
-                model.TableName,
-                group.Key);
+        var indexedColumns = model.PersistedColumns
+            .SelectMany(column => column.Property.GetCustomAttributes(typeof(IndexAttribute), true).Cast<IndexAttribute>().Select(attribute => (column, attribute)))
+            .ToArray();
 
-            indexes[name] = (
-                Name: name,
-                Unique: true,
-                Columns: columns);
+        foreach (var item in indexedColumns.Where(item => string.IsNullOrWhiteSpace(item.attribute.Name)))
+        {
+            var name = $"{ManagedIndexPrefix}IX_{NormalizeName(model.TableName)}_{NormalizeName(item.column.ColumnName)}";
+            indexes[name] = (name, false, tenantPrefix.Concat(new[] { item.column.ColumnName }).Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+        }
+
+        foreach (var group in indexedColumns.Where(item => !string.IsNullOrWhiteSpace(item.attribute.Name)).GroupBy(item => item.attribute.Name!, StringComparer.OrdinalIgnoreCase))
+        {
+            var name = $"{ManagedIndexPrefix}IX_{NormalizeName(model.TableName)}_{NormalizeName(group.Key)}";
+            var columns = group.OrderBy(item => item.attribute.Order).Select(item => item.column.ColumnName);
+            indexes[name] = (name, false, tenantPrefix.Concat(columns).Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
         }
 
         return indexes;
@@ -489,9 +490,13 @@ public sealed class SqlServerSchemaSynchronizer : IDBSchemaSynchronizer
         var primaryKeyName = BuildPrimaryKeyName(
             model.TableName);
 
+        var primaryKeyColumns = model.TenantScoped && model.TenantColumn is not null
+            ? new[] { model.TenantColumn.ColumnName, model.CodeColumn.ColumnName }
+            : new[] { model.CodeColumn.ColumnName };
+
         definitions.Add(
             $"CONSTRAINT [{EscapeIdentifier(primaryKeyName)}] " +
-            $"PRIMARY KEY ([{EscapeIdentifier(model.CodeColumn.ColumnName)}])");
+            $"PRIMARY KEY ({string.Join(", ", primaryKeyColumns.Select(column => $"[{EscapeIdentifier(column)}]"))})");
 
         return $"""
                 CREATE TABLE [{EscapeIdentifier(model.TableName)}]
@@ -951,7 +956,7 @@ public sealed class SqlServerSchemaSynchronizer : IDBSchemaSynchronizer
 
         command.Parameters.AddWithValue(
             "@databaseName",
-            _options.Connection.Database);
+            _options.Connection.DatabaseName);
 
         command.Parameters.AddWithValue(
             "@modelName",
@@ -991,14 +996,15 @@ public sealed class SqlServerSchemaSynchronizer : IDBSchemaSynchronizer
 
     private SqlConnection CreateConnection()
     {
-        var connection = _options.Connection;
 
+        var connection = _options.Connection;
+        if (!string.IsNullOrWhiteSpace(connection.ConnectionString)) return new SqlConnection(connection.ConnectionString);
         var builder = new SqlConnectionStringBuilder
         {
             DataSource = connection.Port > 0
                 ? $"{connection.Host},{connection.Port}"
                 : connection.Host,
-            InitialCatalog = connection.Database,
+            InitialCatalog = connection.DatabaseName,
             Encrypt = connection.UseSsl,
             TrustServerCertificate = !connection.UseSsl
         };
@@ -1230,6 +1236,23 @@ public sealed class SqlServerSchemaSynchronizer : IDBSchemaSynchronizer
         string tableName)
     {
         return $"PK_{NormalizeName(tableName)}_Code";
+    }
+
+    private static IndexDirection GetIndexDirection(DBModelMetadata model, string indexName, string columnName)
+    {
+        if (model.TenantColumn is not null && columnName.Equals(model.TenantColumn.ColumnName, StringComparison.OrdinalIgnoreCase))
+            return IndexDirection.Ascending;
+        var column = model.PersistedColumns.FirstOrDefault(item => item.ColumnName.Equals(columnName, StringComparison.OrdinalIgnoreCase));
+        if (column is null) return IndexDirection.Ascending;
+        var attributes = column.Property.GetCustomAttributes(typeof(IndexAttribute), true).Cast<IndexAttribute>();
+        foreach (var attribute in attributes)
+        {
+            var expected = string.IsNullOrWhiteSpace(attribute.Name)
+                ? $"{ManagedIndexPrefix}IX_{NormalizeName(model.TableName)}_{NormalizeName(column.ColumnName)}"
+                : $"{ManagedIndexPrefix}IX_{NormalizeName(model.TableName)}_{NormalizeName(attribute.Name!)}";
+            if (expected.Equals(indexName, StringComparison.OrdinalIgnoreCase)) return attribute.Direction;
+        }
+        return IndexDirection.Ascending;
     }
 
     private static string BuildUniqueIndexName(

@@ -185,6 +185,20 @@ public sealed class DataRepository(
     public Task<long> Count<T>(Expression<Func<T, bool>> expression, SearchParam? search = null, CancellationToken cancellationToken = default) where T : DBModel => Count<T>(ExpressionTranslator.Translate(expression, search), cancellationToken);
 
     /// <inheritdoc />
+    public async Task<TValue> Sum<T, TValue>(Expression<Func<T, TValue>> field, SearchParam? search = null, CancellationToken cancellationToken = default) where T : DBModel
+    {
+        var fieldPath = ExpressionFieldResolver.Resolve(field.Body);
+        var value = await provider.Sum<T>(fieldPath, searchNormalizer.Normalize<T>(search), cancellationToken);
+        if (value is null || value == DBNull.Value) return default!;
+        var target = Nullable.GetUnderlyingType(typeof(TValue)) ?? typeof(TValue);
+        return (TValue)Convert.ChangeType(value, target, System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    /// <inheritdoc />
+    public Task<TValue> Sum<T, TValue>(Expression<Func<T, TValue>> field, Expression<Func<T, bool>> expression, SearchParam? search = null, CancellationToken cancellationToken = default) where T : DBModel =>
+        Sum(field, ExpressionTranslator.Translate(expression, search), cancellationToken);
+
+    /// <inheritdoc />
     public async Task<T> Save<T>(T model, CancellationToken cancellationToken = default) where T : DBModel
     {
         var result = await Save(new[] { model }, cancellationToken, 1);

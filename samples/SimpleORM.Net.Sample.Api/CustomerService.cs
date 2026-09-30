@@ -152,6 +152,16 @@ public sealed class CustomerService : ICustomerService
     }
 
     /// <inheritdoc />
+    public Task<decimal> SumActiveCreditLimit(CancellationToken cancellationToken = default)
+    {
+        return _repository.Sum<Customer, decimal>(
+            customer => customer.CreditLimit,
+            customer => customer.Status == CustomerStatus.Active,
+            null,
+            cancellationToken);
+    }
+
+    /// <inheritdoc />
     public Task<Customer> Save(
         Customer customer,
         CancellationToken cancellationToken = default)

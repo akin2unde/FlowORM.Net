@@ -1,6 +1,7 @@
 using MongoDB.Bson;
 using MongoDB.Driver;
 using SimpleORM.Net.Abstractions;
+using SimpleORM.Net.Attributes;
 using SimpleORM.Net.Configuration;
 using SimpleORM.Net.Metadata;
 
@@ -60,15 +61,16 @@ public sealed class MongoIndexSynchronizer : IDBSchemaSynchronizer
                 }
 
                 var keys = Builders<BsonDocument>.IndexKeys.Combine(
-                    desired.Columns.Select(
-                        column => Builders<BsonDocument>.IndexKeys.Ascending(column)));
+                    desired.Columns.Select(column => column.Direction == IndexDirection.Descending
+                        ? Builders<BsonDocument>.IndexKeys.Descending(column.Name)
+                        : Builders<BsonDocument>.IndexKeys.Ascending(column.Name)));
 
                 var index = new CreateIndexModel<BsonDocument>(
                     keys,
                     new CreateIndexOptions
                     {
                         Name = desired.Name,
-                        Unique = true
+                        Unique = desired.Unique
                     });
 
                 await collection.Indexes.CreateOneAsync(
@@ -93,34 +95,57 @@ public sealed class MongoIndexSynchronizer : IDBSchemaSynchronizer
         }
     }
 
-    private static IReadOnlyList<(string Name, IReadOnlyList<string> Columns)> BuildDesiredIndexes(
-        DBModelMetadata model)
-    {
-        var indexes = new List<(string Name, IReadOnlyList<string> Columns)>();
+    private sealed record DesiredIndex(string Name, bool Unique, IReadOnlyList<(string Name, IndexDirection Direction)> Columns);
 
-        foreach (var column in model.PersistedColumns
-                     .Where(column => column.Unique)
-                     .Where(column => string.IsNullOrWhiteSpace(column.UniqueGroup)))
+    private static IReadOnlyList<DesiredIndex> BuildDesiredIndexes(DBModelMetadata model)
+    {
+        var indexes = new List<DesiredIndex>();
+        var tenantPrefix = model.TenantScoped && model.TenantColumn is not null
+            ? new[] { (model.TenantColumn.ColumnName, IndexDirection.Ascending) }
+            : Array.Empty<(string, IndexDirection)>();
+        var tenantName = model.TenantScoped && model.TenantColumn is not null
+            ? $"_{NormalizeName(model.TenantColumn.ColumnName)}"
+            : string.Empty;
+
+        // Code is unique inside a tenant; global models keep globally unique Code.
+        indexes.Add(new DesiredIndex(
+            $"{ManagedIndexPrefix}UQ_{NormalizeName(model.TableName)}{tenantName}_Code",
+            true,
+            tenantPrefix.Concat(new[] { (model.CodeColumn.ColumnName, IndexDirection.Ascending) }).DistinctBy(item => item.Item1, StringComparer.OrdinalIgnoreCase).ToArray()));
+
+        foreach (var column in model.PersistedColumns.Where(column => column.Unique && !column.IsCode).Where(column => string.IsNullOrWhiteSpace(column.UniqueGroup)))
         {
-            indexes.Add(
-                (
-                    $"{ManagedIndexPrefix}UQ_{NormalizeName(model.TableName)}_{NormalizeName(column.ColumnName)}",
-                    new[] { column.ColumnName }
-                ));
+            indexes.Add(new DesiredIndex(
+                $"{ManagedIndexPrefix}UQ_{NormalizeName(model.TableName)}{tenantName}_{NormalizeName(column.ColumnName)}",
+                true,
+                tenantPrefix.Concat(new[] { (column.ColumnName, IndexDirection.Ascending) }).DistinctBy(item => item.Item1, StringComparer.OrdinalIgnoreCase).ToArray()));
         }
 
-        foreach (var group in model.PersistedColumns
-                     .Where(column => column.Unique)
-                     .Where(column => !string.IsNullOrWhiteSpace(column.UniqueGroup))
-                     .GroupBy(
-                         column => column.UniqueGroup!,
-                         StringComparer.OrdinalIgnoreCase))
+        foreach (var group in model.PersistedColumns.Where(column => column.Unique && !column.IsCode).Where(column => !string.IsNullOrWhiteSpace(column.UniqueGroup)).GroupBy(column => column.UniqueGroup!, StringComparer.OrdinalIgnoreCase))
         {
-            indexes.Add(
-                (
-                    $"{ManagedIndexPrefix}UQ_{NormalizeName(model.TableName)}_{NormalizeName(group.Key)}",
-                    group.Select(column => column.ColumnName).ToArray()
-                ));
+            indexes.Add(new DesiredIndex(
+                $"{ManagedIndexPrefix}UQ_{NormalizeName(model.TableName)}{tenantName}_{NormalizeName(group.Key)}",
+                true,
+                tenantPrefix.Concat(group.Select(column => (column.ColumnName, IndexDirection.Ascending))).DistinctBy(item => item.Item1, StringComparer.OrdinalIgnoreCase).ToArray()));
+        }
+
+        var indexed = model.PersistedColumns.SelectMany(column =>
+            column.Property.GetCustomAttributes(typeof(IndexAttribute), true).Cast<IndexAttribute>().Select(attribute => (column, attribute))).ToArray();
+
+        foreach (var item in indexed.Where(item => string.IsNullOrWhiteSpace(item.attribute.Name)))
+        {
+            indexes.Add(new DesiredIndex(
+                $"{ManagedIndexPrefix}IX_{NormalizeName(model.TableName)}{tenantName}_{NormalizeName(item.column.ColumnName)}",
+                false,
+                tenantPrefix.Concat(new[] { (item.column.ColumnName, item.attribute.Direction) }).DistinctBy(value => value.Item1, StringComparer.OrdinalIgnoreCase).ToArray()));
+        }
+
+        foreach (var group in indexed.Where(item => !string.IsNullOrWhiteSpace(item.attribute.Name)).GroupBy(item => item.attribute.Name!, StringComparer.OrdinalIgnoreCase))
+        {
+            indexes.Add(new DesiredIndex(
+                $"{ManagedIndexPrefix}IX_{NormalizeName(model.TableName)}{tenantName}_{NormalizeName(group.Key)}",
+                false,
+                tenantPrefix.Concat(group.OrderBy(item => item.attribute.Order).Select(item => (item.column.ColumnName, item.attribute.Direction))).DistinctBy(value => value.Item1, StringComparer.OrdinalIgnoreCase).ToArray()));
         }
 
         return indexes;

@@ -33,6 +33,15 @@ public sealed class SearchParamNormalizer(
 
             if (column is null)
             {
+                // Dotted paths are provider-resolved document fields (for example
+                // Attributes.Color or Address.City). Their runtime value type is not
+                // known to provider-neutral metadata, so preserve the supplied value.
+                if (filter.Field.Contains('.', StringComparison.Ordinal))
+                {
+                    filter.Value = UnwrapJsonElement(filter.Value);
+                    continue;
+                }
+
                 throw new InvalidOperationException(
                     $"Property or column '{filter.Field}' was not found on model '{modelMetadata.ModelName}'.");
             }

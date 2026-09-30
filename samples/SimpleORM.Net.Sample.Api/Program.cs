@@ -83,11 +83,14 @@ public static class Program
         DatabaseType provider)
     {
         options.Database = provider;
+        // Alternatively provide the complete provider connection string. When non-empty,
+        // ConnectionString takes precedence over Host/Port/DatabaseName/credentials below.
+        // options.Connection.ConnectionString = configuration.GetConnectionString("SimpleOrm");
         options.Connection.Host = configuration["SimpleOrm:Host"] ?? "localhost";
         options.Connection.Port = ResolvePort(
             configuration["SimpleOrm:Port"],
             provider);
-        options.Connection.Database = configuration["SimpleOrm:Database"]
+        options.Connection.DatabaseName = configuration["SimpleOrm:Database"]
             ?? "SimpleOrmSample";
         options.Connection.Username = configuration["SimpleOrm:Username"];
         options.Connection.Password = configuration["SimpleOrm:Password"];

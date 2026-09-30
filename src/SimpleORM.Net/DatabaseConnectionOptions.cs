@@ -4,6 +4,15 @@ namespace SimpleORM.Net.Configuration;
 public sealed class DatabaseConnectionOptions
 {
 
+    /// <summary>ConnectionString.</summary>
+    public string? ConnectionString
+    {
+        get;
+
+        set;
+
+    }
+  = string.Empty;
     /// <summary>Host.</summary>
     public string Host
     {
@@ -12,7 +21,7 @@ public sealed class DatabaseConnectionOptions
         set;
 
     }
-    ="localhost";
+    = "localhost";
 
     /// <summary>Port.</summary>
     public int Port
@@ -24,14 +33,14 @@ public sealed class DatabaseConnectionOptions
     }
 
     /// <summary>Database name.</summary>
-    public string Database
+    public string DatabaseName
     {
         get;
 
         set;
 
     }
-    =string.Empty;
+    = string.Empty;
 
     /// <summary>Username.</summary>
     public string? Username
@@ -61,11 +70,11 @@ public sealed class DatabaseConnectionOptions
     }
 
     /// <summary>Provider-specific options.</summary>
-    public IDictionary<string,string> Options
+    public IDictionary<string, string> Options
     {
         get;
 
     }
-    =new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);
+    = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
 }

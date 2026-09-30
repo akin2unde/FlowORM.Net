@@ -235,6 +235,36 @@ public sealed class SqlServerProvider : IDatabaseProvider, IDBQuery
     }
 
     /// <inheritdoc />
+    public async Task<object?> Sum<T>(
+        string field,
+        SearchParam search,
+        CancellationToken cancellationToken = default)
+        where T : DBModel
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(field);
+        ArgumentNullException.ThrowIfNull(search);
+        if (field.Contains('.', StringComparison.Ordinal))
+            throw new NotSupportedException($"Nested field '{field}' is not supported by the SQL Server provider.");
+
+        var model = _metadata.GetMetadata<T>();
+        var column = model.PersistedColumns.FirstOrDefault(c =>
+            c.PropertyName.Equals(field, StringComparison.OrdinalIgnoreCase) ||
+            c.ColumnName.Equals(field, StringComparison.OrdinalIgnoreCase))
+            ?? throw new InvalidOperationException($"Property or column '{field}' was not found on model '{model.ModelName}'.");
+        var parameters = new Dictionary<string, object?>();
+        var from = BuildFromClause(model, search);
+        var where = BuildWhereClause(model, search, parameters);
+        var sql = $"SELECT SUM([t].[{EscapeIdentifier(column.ColumnName)}]) FROM [{EscapeIdentifier(model.TableName)}] AS [t] {from} {where}";
+        await using var connection = CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        AddParameters(command, parameters);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is null || result == DBNull.Value ? null : result;
+    }
+
+    /// <inheritdoc />
     public async Task Insert<T>(
         IReadOnlyList<T> models,
         IDBTransaction transaction,
@@ -672,12 +702,17 @@ public sealed class SqlServerProvider : IDatabaseProvider, IDBQuery
     {
         var connection = _options.Connection;
 
+        if (!string.IsNullOrWhiteSpace(connection.ConnectionString))
+        {
+            return new SqlConnection(connection.ConnectionString);
+        }
+
         var builder = new SqlConnectionStringBuilder
         {
             DataSource = connection.Port > 0
                 ? $"{connection.Host},{connection.Port}"
                 : connection.Host,
-            InitialCatalog = connection.Database,
+            InitialCatalog = connection.DatabaseName,
             Encrypt = connection.UseSsl,
             TrustServerCertificate = !connection.UseSsl
         };

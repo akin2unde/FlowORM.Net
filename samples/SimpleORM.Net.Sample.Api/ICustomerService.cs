@@ -85,6 +85,10 @@ public interface ICustomerService
     Task<long> CountActive(
         CancellationToken cancellationToken = default);
 
+    /// <summary>Demonstrates IDataRepository.Sum with a strongly typed field and filter.</summary>
+    Task<decimal> SumActiveCreditLimit(
+        CancellationToken cancellationToken = default);
+
     /// <summary>
     /// Demonstrates IDataRepository.Save(single).
     /// </summary>

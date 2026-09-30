@@ -45,6 +45,13 @@ public interface IDatabaseProvider
         CancellationToken cancellationToken = default)
         where T : DBModel;
 
+    /// <summary>Sums one numeric field over matching records.</summary>
+    Task<object?> Sum<T>(
+        string field,
+        SearchParam search,
+        CancellationToken cancellationToken = default)
+        where T : DBModel;
+
     /// <summary>Inserts one physical batch.</summary>
     Task Insert<T>(
         IReadOnlyList<T> models,

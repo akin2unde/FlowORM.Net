@@ -204,6 +204,21 @@ public interface IDataRepository
         CancellationToken cancellationToken = default)
         where T : DBModel;
 
+    /// <summary>Sums a numeric field over records matching an optional search.</summary>
+    Task<TValue> Sum<T, TValue>(
+        Expression<Func<T, TValue>> field,
+        SearchParam? search = null,
+        CancellationToken cancellationToken = default)
+        where T : DBModel;
+
+    /// <summary>Sums a numeric field over records matching a strongly typed filter.</summary>
+    Task<TValue> Sum<T, TValue>(
+        Expression<Func<T, TValue>> field,
+        Expression<Func<T, bool>> expression,
+        SearchParam? search = null,
+        CancellationToken cancellationToken = default)
+        where T : DBModel;
+
     /// <summary>
     /// Saves one model according to its <see cref="DBModel.DataState"/>.
     /// </summary>

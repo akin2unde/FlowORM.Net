@@ -161,6 +161,13 @@ public sealed class CustomerController : ControllerBase
             cancellationToken);
     }
 
+    /// <summary>Returns the sum of CreditLimit for active customers.</summary>
+    [HttpGet("SumActiveCreditLimit")]
+    public Task<decimal> SumActiveCreditLimit(CancellationToken cancellationToken = default)
+    {
+        return _service.SumActiveCreditLimit(cancellationToken);
+    }
+
     /// <summary>
     /// Saves one customer. DataState decides insert, update or delete.
     /// </summary>

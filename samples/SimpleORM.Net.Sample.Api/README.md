@@ -671,3 +671,47 @@ public sealed class TemporaryImport : DBModel
 {
 }
 ```
+
+## New feature examples
+
+### Sum
+
+`Customer.Status` is indexed with `[Index]` and the sample exposes `GET /customer/SumActiveCreditLimit`, which executes:
+
+```csharp
+_repository.Sum<Customer, decimal>(
+    customer => customer.CreditLimit,
+    customer => customer.Status == CustomerStatus.Active,
+    cancellationToken: cancellationToken);
+```
+
+### Full connection string
+
+You may replace the individual Host/Port/DatabaseName credentials in `Program.cs` with:
+
+```csharp
+options.Connection.ConnectionString =
+    configuration.GetConnectionString("SimpleOrm");
+```
+
+A non-empty full connection string takes precedence over the individual connection properties.
+
+### MongoDB nested/dictionary queries
+
+For Mongo-only document models, expressions can address nested properties and dictionary values:
+
+```csharp
+await repository.Select<Product>(
+    product => product.Attributes["Color"] == "Black",
+    cancellationToken: cancellationToken);
+
+await repository.Select<CustomerDocument>(
+    customer => customer.Address.City == "Lagos",
+    cancellationToken: cancellationToken);
+```
+
+The same dotted paths can be supplied through `SearchParam` and used for sorting and `SelectDynamic` projections.
+
+### Upsert
+
+`DBModel.Upsert` is a MongoDB last-write-wins feature for `DataState.Changed` models. It is intentionally rejected for concurrency-protected models. See the root README for the full behavior and `[DisableConcurrencyCheck]` requirement.

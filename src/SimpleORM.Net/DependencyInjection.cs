@@ -33,7 +33,7 @@ public static class DependencyInjection
             throw new InvalidOperationException("Connection.Port must be greater than zero.");
         }
 
-        if (string.IsNullOrWhiteSpace(options.Connection.Database))
+        if (string.IsNullOrWhiteSpace(options.Connection.DatabaseName))
         {
             throw new InvalidOperationException("Connection.Database is required.");
         }

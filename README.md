@@ -363,3 +363,113 @@ Future phases are intended to add more providers and provider-neutral data movem
 ## License
 
 MIT. See `LICENSE`.
+
+## Full connection strings
+
+`Connection.ConnectionString` can be used when the application already owns a complete provider connection string. When it is supplied, the SQL Server and MongoDB providers use it directly instead of rebuilding a connection from `Host`, `Port`, `DatabaseName`, `Username`, `Password`, `UseSsl` and `Options`.
+
+```csharp
+builder.Services.AddSimpleOrm(options =>
+{
+    options.Database = DatabaseType.SqlServer;
+    options.Connection.ConnectionString = configuration.GetConnectionString("CommerceDb");
+});
+```
+
+MongoDB works the same way:
+
+```csharp
+options.Database = DatabaseType.MongoDb;
+options.Connection.ConnectionString =
+    "mongodb://user:password@localhost:27017/commerce";
+```
+
+Use either the full `ConnectionString` or the individual connection properties. A non-empty `ConnectionString` takes precedence.
+
+## Indexes and tenant-aware uniqueness
+
+Use `[Index]` for query/sort performance where duplicate values are allowed. `[Unique]` remains the constraint for values that must not repeat.
+
+```csharp
+[Index]
+public CustomerStatus Status { get; set; }
+
+[Unique]
+public string Email { get; set; } = string.Empty;
+```
+
+Named indexes create composite indexes. `Order` controls the key order and `Direction` controls ascending/descending index keys:
+
+```csharp
+[Index("IX_Status_Created", Order = 1)]
+public CustomerStatus Status { get; set; }
+
+[Index("IX_Status_Created", Order = 2, Direction = IndexDirection.Descending)]
+public DateTime CreatedAt { get; set; }
+```
+
+For tenant-scoped models SimpleORM automatically prefixes managed indexes/unique constraints with `Tenant`, because normal queries are tenant-scoped. `Code` is unique per tenant (`Tenant + Code`). Existing `[Unique]` fields are also unique per tenant (`Tenant + Email`, for example). `[Global]` models have no tenant prefix, so their `Code` and `[Unique]` values remain globally unique.
+
+On SQL Server, new tenant tables use `(Tenant, Code)` as the primary key. Changing an existing Code-only primary key is destructive and therefore requires `options.Migrations.AllowDestructiveChanges = true`.
+
+## Sum aggregation
+
+`Count` remains available as before. `Sum` performs the aggregation inside the database rather than loading matching records into memory.
+
+```csharp
+var total = await repository.Sum<Sale, decimal>(
+    sale => sale.TotalAmount,
+    sale => sale.Status == SaleStatus.Completed,
+    cancellationToken: ct);
+```
+
+A `SearchParam` can also be supplied to the `Sum` overload. SQL Server generates `SUM(...)` over the filtered query; MongoDB uses `$match` and `$group/$sum`.
+
+## MongoDB nested and dictionary queries
+
+MongoDB supports dotted document paths through both `SearchParam` and strongly typed expressions. This is useful for nested objects and dictionaries.
+
+```csharp
+var blackProducts = await repository.Select<Product>(
+    product => product.Attributes["Color"] == "Black",
+    cancellationToken: ct);
+
+var lagosCustomers = await repository.Select<Customer>(
+    customer => customer.Address.City == "Lagos",
+    cancellationToken: ct);
+```
+
+Dictionary keys used by expression translation must resolve to a string value. The expression resolver translates the examples above to `Attributes.Color` and `Address.City`.
+
+Dynamic/API filters can use the same paths:
+
+```json
+{
+  "filters": [
+    { "field": "Attributes.Color", "operator": "EQ", "value": "Black" },
+    { "field": "Attributes.Storage", "operator": "GTE", "value": 256 }
+  ],
+  "orderBy": [
+    { "field": "Attributes.Storage", "descending": true }
+  ],
+  "fields": ["Code", "Name", "Attributes.Color", "Attributes.Storage"]
+}
+```
+
+MongoDB supports these nested paths for filtering, ordering, `SelectDynamic`, and `Sum`. SQL Server deliberately rejects document/dictionary dotted paths unless represented through the ORM's relational join facilities.
+
+## Upsert
+
+`DBModel.Upsert` requests insert-or-replace behavior when a MongoDB model is saved as `DataState.Changed`:
+
+```csharp
+product.DataState = DataState.Changed;
+product.Upsert = true;
+await repository.Save(product, ct);
+```
+
+If the matching MongoDB document exists it is replaced; if it does not exist MongoDB inserts it. `Upsert` is an instruction property and is not persisted.
+
+Optimistic concurrency and last-write-wins upsert have conflicting semantics, so MongoDB rejects `Upsert = true` while concurrency protection is enabled for the model. Use normal `DataState.New` inserts where possible. If last-write-wins upsert is intentionally required, opt that model out with `[DisableConcurrencyCheck]`.
+
+`Upsert` is currently a MongoDB provider feature; SQL Server does not currently translate `DBModel.Upsert` into a MERGE/upsert operation.

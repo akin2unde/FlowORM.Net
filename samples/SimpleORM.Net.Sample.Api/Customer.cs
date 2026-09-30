@@ -37,5 +37,9 @@ public sealed class Customer : DBModel
     /// <summary>
     /// Gets or sets the customer status.
     /// </summary>
+    [Index]
     public CustomerStatus Status { get; set; }
+
+    /// <summary>Gets or sets the customer credit limit; used by the Sum sample.</summary>
+    public decimal CreditLimit { get; set; }
 }

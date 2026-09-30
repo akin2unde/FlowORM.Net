@@ -75,3 +75,15 @@
   such as `IFormFile` on a product image model.
 - MongoDB persisted-document creation now respects custom
   `[DBColumn(Name = "...")]` names without first serializing the complete model.
+
+## 2026-09-30
+
+- Added `[Index]` with named composite indexes, ordering and ascending/descending key direction.
+- Made ORM-managed indexes tenant-aware: tenant-scoped indexes are prefixed with Tenant.
+- Made Code uniqueness tenant-aware. New SQL tenant tables use `(Tenant, Code)` as the primary key; MongoDB uses a unique compound index.
+- Made existing `[Unique]` constraints tenant-aware while `[Global]` models remain globally unique.
+- Added server-side `Sum<T,TValue>` aggregation with `SearchParam` and expression-filter overloads.
+- Added MongoDB dotted nested/dictionary paths for SearchParam filtering, sorting, SelectDynamic and Sum.
+- Extended expression filtering to nested members and dictionary indexers such as `x => x.Attributes["Color"] == "Black"`.
+- Documented `DBModel.Upsert`, including its MongoDB/concurrency semantics.
+- Documented full `Connection.ConnectionString` configuration and fixed SQL Server runtime connections to honor it, matching MongoDB and SQL schema synchronization.

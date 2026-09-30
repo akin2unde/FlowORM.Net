@@ -52,12 +52,18 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
 
         var c = o.Connection;
 
-        var cs = string.IsNullOrWhiteSpace(c.Username) ? $"mongodb://{c.Host}:{c.Port}" : $"mongodb://{Uri.EscapeDataString(c.Username)}:{Uri.EscapeDataString(c.Password ?? "")}@{c.Host}:{c.Port}/{c.Database}";
-        cs += "?replicaSet=rs0&directConnection=true";
-        _client = new MongoClient(cs);
-
-        _db = _client.GetDatabase(c.Database);
-
+        if (string.IsNullOrWhiteSpace(c.ConnectionString))
+        {
+            var cs = string.IsNullOrWhiteSpace(c.Username) ? $"mongodb://{c.Host}:{c.Port}" : $"mongodb://{Uri.EscapeDataString(c.Username)}:{Uri.EscapeDataString(c.Password ?? "")}@{c.Host}:{c.Port}/{c.DatabaseName}";
+            cs += "?replicaSet=rs0&directConnection=true";
+            _client = new MongoClient(cs);
+        }
+        else
+        {
+            if (string.IsNullOrWhiteSpace(c.DatabaseName)) throw new Exception("Database name must be set");
+            _client = new MongoClient(c.ConnectionString);
+        }
+        _db = _client.GetDatabase(c.DatabaseName);
     }
 
     /// <inheritdoc />
@@ -224,8 +230,8 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
 
         foreach (var field in search.Fields)
         {
-            var column = FindPersistedColumn(metadata, field);
-            projection[column.PropertyName] = "$" + column.ColumnName;
+            var mongoField = ResolveMongoFieldPath(metadata, field);
+            projection[field.Replace('.', '_')] = "$" + mongoField;
         }
 
         foreach (var join in search.Joins)
@@ -262,6 +268,22 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
 
     /// <inheritdoc />
     public Task<long> Count<T>(SearchParam p, CancellationToken ct = default) where T : DBModel => Col<T>().CountDocumentsAsync(Filter<T>(p), cancellationToken: ct);
+
+    /// <inheritdoc />
+    public async Task<object?> Sum<T>(string field, SearchParam search, CancellationToken cancellationToken = default) where T : DBModel
+    {
+        var metadata = _m.GetMetadata<T>();
+        var mongoField = ResolveMongoFieldPath(metadata, field);
+        var pipeline = new[]
+        {
+            new BsonDocument("$match", BuildDocumentFilter(metadata, search)),
+            new BsonDocument("$group", new BsonDocument { { "_id", BsonNull.Value }, { "value", new BsonDocument("$sum", "$" + mongoField) } })
+        };
+        var result = await _db.GetCollection<BsonDocument>(metadata.TableName)
+            .Aggregate<BsonDocument>(pipeline)
+            .FirstOrDefaultAsync(cancellationToken);
+        return result is null || !result.Contains("value") ? null : ConvertBsonValue(result["value"]);
+    }
 
     /// <inheritdoc />
     public async Task Insert<T>(IReadOnlyList<T> x, IDBTransaction tr, CancellationToken ct = default) where T : DBModel
@@ -872,13 +894,22 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
         foreach (var x in p.Filters)
         {
             var c = m.PersistedColumns.FirstOrDefault(
-                column => column.PropertyName.Equals(
-                    x.Field,
-                    StringComparison.OrdinalIgnoreCase))
-                ?? throw new InvalidOperationException(
-                    $"Property '{x.Field}' is not a persisted column on model '{m.ModelName}'.");
+                column => column.PropertyName.Equals(x.Field, StringComparison.OrdinalIgnoreCase)
+                    || column.ColumnName.Equals(x.Field, StringComparison.OrdinalIgnoreCase));
 
-            fs.Add(BuildTypedFilter(b, c, x));
+            if (c is not null)
+            {
+                fs.Add(BuildTypedFilter(b, c, x));
+            }
+            else if (x.Field.Contains('.', StringComparison.Ordinal))
+            {
+                fs.Add(BuildDynamicTypedFilter(b, ResolveMongoFieldPath(m, x.Field), x));
+            }
+            else
+            {
+                throw new InvalidOperationException(
+                    $"Property '{x.Field}' is not a persisted column on model '{m.ModelName}'.");
+            }
 
         }
         if (!string.IsNullOrWhiteSpace(p.Search))
@@ -1094,9 +1125,15 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
         DBModelMetadata metadata,
         SearchFilter filter)
     {
-        var column = FindPersistedColumn(metadata, filter.Field);
-        var field = column.ColumnName;
-        var value = ToBsonValue(column, filter.Value);
+        var column = metadata.PersistedColumns.FirstOrDefault(candidate =>
+            candidate.PropertyName.Equals(filter.Field, StringComparison.OrdinalIgnoreCase) ||
+            candidate.ColumnName.Equals(filter.Field, StringComparison.OrdinalIgnoreCase));
+        var field = column is null
+            ? ResolveMongoFieldPath(metadata, filter.Field)
+            : column.ColumnName;
+        var value = column is null
+            ? ToBsonValue(filter.Value)
+            : ToBsonValue(column, filter.Value);
 
         return filter.Operator switch
         {
@@ -1112,11 +1149,11 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
             SearchOperator.In => new BsonDocument(field, new BsonDocument(
                 "$in",
                 new BsonArray(GetEnumerableValues(filter.Value, "In")
-                    .Select(item => ToBsonValue(column, item))))),
+                    .Select(item => column is null ? ToBsonValue(item) : ToBsonValue(column, item))))),
             SearchOperator.NotIn => new BsonDocument(field, new BsonDocument(
                 "$nin",
                 new BsonArray(GetEnumerableValues(filter.Value, "NotIn")
-                    .Select(item => ToBsonValue(column, item))))),
+                    .Select(item => column is null ? ToBsonValue(item) : ToBsonValue(column, item))))),
             SearchOperator.IsNull => new BsonDocument(
                 "$or",
                 new BsonArray
@@ -1131,11 +1168,26 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
                     new BsonDocument(field, new BsonDocument("$exists", true)),
                     new BsonDocument(field, new BsonDocument("$ne", BsonNull.Value))
                 }),
-            SearchOperator.Between => BuildDocumentRange(column, field, filter.Value, false),
-            SearchOperator.NotBetween => BuildDocumentRange(column, field, filter.Value, true),
+            SearchOperator.Between => column is null
+                ? BuildDynamicDocumentRange(field, filter.Value, false)
+                : BuildDocumentRange(column, field, filter.Value, false),
+            SearchOperator.NotBetween => column is null
+                ? BuildDynamicDocumentRange(field, filter.Value, true)
+                : BuildDocumentRange(column, field, filter.Value, true),
             _ => throw new NotSupportedException(
                 $"Search operator '{filter.Operator}' is not supported by MongoDB.")
         };
+    }
+
+    private static BsonDocument BuildDynamicDocumentRange(string field, object? value, bool negate)
+    {
+        var values = GetEnumerableValues(value, negate ? "NotBetween" : "Between")
+            .Take(3).Select(ToBsonValue).ToArray();
+        if (values.Length != 2)
+            throw new ArgumentException($"{(negate ? "NotBetween" : "Between")} requires exactly two values.");
+        return negate
+            ? new BsonDocument("$or", new BsonArray { new BsonDocument(field, new BsonDocument("$lt", values[0])), new BsonDocument(field, new BsonDocument("$gt", values[1])) })
+            : new BsonDocument(field, new BsonDocument { { "$gte", values[0] }, { "$lte", values[1] } });
     }
 
     private static BsonDocument BuildDocumentRange(
@@ -1282,8 +1334,8 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
 
         foreach (var order in search.OrderBy)
         {
-            var column = FindPersistedColumn(metadata, order.Field);
-            sort[column.ColumnName] = order.Descending ? -1 : 1;
+            var field = ResolveMongoFieldPath(metadata, order.Field);
+            sort[field] = order.Descending ? -1 : 1;
         }
 
         if (!search.OrderBy.Any(order =>
@@ -1423,6 +1475,49 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
 
     }
 
+    private static string ResolveMongoFieldPath(DBModelMetadata metadata, string field)
+    {
+        var parts = field.Split('.', 2, StringSplitOptions.TrimEntries);
+        var root = metadata.PersistedColumns.FirstOrDefault(column =>
+            column.PropertyName.Equals(parts[0], StringComparison.OrdinalIgnoreCase) ||
+            column.ColumnName.Equals(parts[0], StringComparison.OrdinalIgnoreCase))
+            ?? throw new InvalidOperationException($"Property '{parts[0]}' is not a persisted column on model '{metadata.ModelName}'.");
+        return parts.Length == 1 ? root.ColumnName : root.ColumnName + "." + parts[1];
+    }
+
+    private static FilterDefinition<T> BuildDynamicTypedFilter<T>(FilterDefinitionBuilder<T> builder, string field, SearchFilter filter) where T : DBModel
+    {
+        var value = filter.Value;
+        return filter.Operator switch
+        {
+            SearchOperator.EQ => builder.Eq(field, value),
+            SearchOperator.NEQ => builder.Ne(field, value),
+            SearchOperator.GT => builder.Gt(field, value),
+            SearchOperator.GTE => builder.Gte(field, value),
+            SearchOperator.LT => builder.Lt(field, value),
+            SearchOperator.LTE => builder.Lte(field, value),
+            SearchOperator.Contains => builder.Regex(field, RegexValue(value, false, false)),
+            SearchOperator.StartsWith => builder.Regex(field, RegexValue(value, true, false)),
+            SearchOperator.EndsWith => builder.Regex(field, RegexValue(value, false, true)),
+            SearchOperator.In => builder.In(field, GetEnumerableValues(value, nameof(SearchOperator.In))),
+            SearchOperator.NotIn => builder.Nin(field, GetEnumerableValues(value, nameof(SearchOperator.NotIn))),
+            SearchOperator.IsNull => builder.Or(builder.Eq(field, BsonNull.Value), builder.Exists(field, false)),
+            SearchOperator.IsNotNull => builder.And(builder.Exists(field, true), builder.Ne(field, BsonNull.Value)),
+            SearchOperator.Between => BuildDynamicTypedRange(builder, field, filter.Value, false),
+            SearchOperator.NotBetween => BuildDynamicTypedRange(builder, field, filter.Value, true),
+            _ => throw new NotSupportedException($"Search operator '{filter.Operator}' is not supported for MongoDB nested fields.")
+        };
+    }
+
+    private static FilterDefinition<T> BuildDynamicTypedRange<T>(FilterDefinitionBuilder<T> builder, string field, object? value, bool negate) where T : DBModel
+    {
+        var values = GetEnumerableValues(value, negate ? nameof(SearchOperator.NotBetween) : nameof(SearchOperator.Between)).Take(3).ToArray();
+        if (values.Length != 2) throw new ArgumentException($"{(negate ? "NotBetween" : "Between")} requires exactly two values.");
+        return negate
+            ? builder.Or(builder.Lt(field, values[0]), builder.Gt(field, values[1]))
+            : builder.And(builder.Gte(field, values[0]), builder.Lte(field, values[1]));
+    }
+
     private SortDefinition<T> Sort<T>(SearchParam p) where T : DBModel
     {
         var b = Builders<T>.Sort;
@@ -1432,16 +1527,10 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
         var x = p.OrderBy
             .Select(order =>
             {
-                var column = m.PersistedColumns.FirstOrDefault(
-                    item => item.PropertyName.Equals(
-                        order.Field,
-                        StringComparison.OrdinalIgnoreCase))
-                    ?? throw new InvalidOperationException(
-                        $"Property '{order.Field}' is not a persisted column on model '{m.ModelName}'.");
-
+                var field = ResolveMongoFieldPath(m, order.Field);
                 return order.Descending
-                    ? b.Descending(column.ColumnName)
-                    : b.Ascending(column.ColumnName);
+                    ? b.Descending(field)
+                    : b.Ascending(field);
             })
             .ToList();
 

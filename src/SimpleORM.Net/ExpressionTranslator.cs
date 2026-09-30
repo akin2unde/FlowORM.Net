@@ -27,51 +27,90 @@ internal static class ExpressionTranslator
 
     }
 
-    private static void Visit(Expression e,SearchParam p)
+    private static void Visit(Expression e, SearchParam p)
     {
-        if(e is BinaryExpression b&&(b.NodeType==ExpressionType.AndAlso||b.NodeType==ExpressionType.OrElse))
+        if (e is BinaryExpression logical &&
+            logical.NodeType is ExpressionType.AndAlso or ExpressionType.OrElse)
         {
-            p.Condition=b.NodeType==ExpressionType.OrElse?SearchCondition.Or:SearchCondition.And;
-
-            Visit(b.Left,p);
-
-            Visit(b.Right,p);
-
+            p.Condition = logical.NodeType == ExpressionType.OrElse
+                ? SearchCondition.Or
+                : SearchCondition.And;
+            Visit(logical.Left, p);
+            Visit(logical.Right, p);
             return;
-
         }
-        if(e is BinaryExpression c&&c.Left is MemberExpression m)
+
+        if (e is BinaryExpression comparison)
         {
-            p.Filters.Add(new SearchFilter
+            var field = TryResolveField(comparison.Left);
+            var valueExpression = comparison.Right;
+            var nodeType = comparison.NodeType;
+
+            if (field is null)
             {
-                Field=m.Member.Name,Operator=c.NodeType switch
-                {
-                    ExpressionType.Equal=>SearchOperator.EQ,ExpressionType.NotEqual=>SearchOperator.NEQ,ExpressionType.GreaterThan=>SearchOperator.GT,ExpressionType.GreaterThanOrEqual=>SearchOperator.GTE,ExpressionType.LessThan=>SearchOperator.LT,ExpressionType.LessThanOrEqual=>SearchOperator.LTE,_=>throw new NotSupportedException()
-                }
-                ,Value=Expression.Lambda(c.Right).Compile().DynamicInvoke()
+                field = TryResolveField(comparison.Right);
+                valueExpression = comparison.Left;
+                nodeType = Reverse(nodeType);
             }
-            );
 
-            return;
-
-        }
-        if(e is MethodCallExpression call&&call.Object is MemberExpression member&&call.Arguments.Count==1)
-        {
-            p.Filters.Add(new SearchFilter
+            if (field is not null)
             {
-                Field=member.Member.Name,Operator=call.Method.Name switch
+                p.Filters.Add(new SearchFilter
                 {
-                    nameof(string.Contains)=>SearchOperator.Contains,nameof(string.StartsWith)=>SearchOperator.StartsWith,nameof(string.EndsWith)=>SearchOperator.EndsWith,_=>throw new NotSupportedException()
-                }
-                ,Value=Expression.Lambda(call.Arguments[0]).Compile().DynamicInvoke()
+                    Field = field,
+                    Operator = nodeType switch
+                    {
+                        ExpressionType.Equal => SearchOperator.EQ,
+                        ExpressionType.NotEqual => SearchOperator.NEQ,
+                        ExpressionType.GreaterThan => SearchOperator.GT,
+                        ExpressionType.GreaterThanOrEqual => SearchOperator.GTE,
+                        ExpressionType.LessThan => SearchOperator.LT,
+                        ExpressionType.LessThanOrEqual => SearchOperator.LTE,
+                        _ => throw new NotSupportedException($"Comparison '{nodeType}' is not supported.")
+                    },
+                    Value = Expression.Lambda(valueExpression).Compile().DynamicInvoke()
+                });
+                return;
             }
-            );
-
-            return;
-
         }
-        throw new NotSupportedException($"Expression '{e}' is outside the MVP expression subset.");
 
+        if (e is MethodCallExpression call && call.Object is not null && call.Arguments.Count == 1)
+        {
+            var field = TryResolveField(call.Object);
+            if (field is not null)
+            {
+                p.Filters.Add(new SearchFilter
+                {
+                    Field = field,
+                    Operator = call.Method.Name switch
+                    {
+                        nameof(string.Contains) => SearchOperator.Contains,
+                        nameof(string.StartsWith) => SearchOperator.StartsWith,
+                        nameof(string.EndsWith) => SearchOperator.EndsWith,
+                        _ => throw new NotSupportedException()
+                    },
+                    Value = Expression.Lambda(call.Arguments[0]).Compile().DynamicInvoke()
+                });
+                return;
+            }
+        }
+
+        throw new NotSupportedException($"Expression '{e}' is outside the supported expression subset.");
     }
+
+    private static string? TryResolveField(Expression expression)
+    {
+        try { return ExpressionFieldResolver.Resolve(expression); }
+        catch (NotSupportedException) { return null; }
+    }
+
+    private static ExpressionType Reverse(ExpressionType type) => type switch
+    {
+        ExpressionType.GreaterThan => ExpressionType.LessThan,
+        ExpressionType.GreaterThanOrEqual => ExpressionType.LessThanOrEqual,
+        ExpressionType.LessThan => ExpressionType.GreaterThan,
+        ExpressionType.LessThanOrEqual => ExpressionType.GreaterThanOrEqual,
+        _ => type
+    };
 
 }
