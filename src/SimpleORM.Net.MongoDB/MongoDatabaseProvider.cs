@@ -40,49 +40,20 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
     private readonly IMongoDatabase _db;
 
     /// <summary>Creates provider.</summary>
-    public MongoDatabaseProvider(SimpleOrmOptions o, IDBMetadataProvider m, ITenantProvider t)
+    public MongoDatabaseProvider(
+        SimpleOrmOptions o,
+        IDBMetadataProvider m,
+        ITenantProvider t,
+        IMongoClient client)
     {
         MongoDBConventionRegistrar.RegisterPersistence(o.EnumStorage);
 
         _o = o;
-
         _m = m;
-
         _t = t;
+        _client = client;
 
-        var c = o.Connection;
-        var databaseName = c.DatabaseName;
-
-        if (string.IsNullOrWhiteSpace(c.ConnectionString))
-        {
-            if (string.IsNullOrWhiteSpace(databaseName))
-            {
-                throw new InvalidOperationException(
-                    "SimpleORM MongoDB requires Connection.DatabaseName when ConnectionString is not supplied.");
-            }
-
-            var cs = string.IsNullOrWhiteSpace(c.Username)
-                ? $"mongodb://{c.Host}:{c.Port}"
-                : $"mongodb://{Uri.EscapeDataString(c.Username)}:{Uri.EscapeDataString(c.Password ?? "")}@{c.Host}:{c.Port}/{databaseName}";
-
-            cs += "?replicaSet=rs0&directConnection=true";
-            _client = new MongoClient(cs);
-        }
-        else
-        {
-            databaseName = string.IsNullOrWhiteSpace(databaseName)
-                ? MongoUrl.Create(c.ConnectionString).DatabaseName
-                : databaseName;
-
-            if (string.IsNullOrWhiteSpace(databaseName))
-            {
-                throw new InvalidOperationException(
-                    "SimpleORM MongoDB requires a DatabaseName. Set Connection.DatabaseName or include the database name in Connection.ConnectionString.");
-            }
-
-            _client = new MongoClient(c.ConnectionString);
-        }
-
+        var databaseName = MongoConnectionResolver.RequireDatabaseName(o);
         _db = _client.GetDatabase(databaseName);
     }
 

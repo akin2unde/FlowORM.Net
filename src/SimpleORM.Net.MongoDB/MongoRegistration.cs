@@ -1,3 +1,5 @@
+using MongoDB.Driver;
+using SimpleORM.Net.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using SimpleORM.Net.Abstractions;
 using SimpleORM.Net.MongoDB.Configuration;
@@ -23,6 +25,17 @@ public static class MongoRegistration
         MongoDBConventionRegistrar.Register(options);
 
         services.AddSingleton(options);
+
+        // MongoClient owns the driver's connection pools and is designed to be
+        // long-lived. Both typed and runtime providers must use this same client
+        // so transaction sessions are never passed across different clients.
+        services.AddSingleton<IMongoClient>(provider =>
+        {
+            var simpleOrmOptions = provider.GetRequiredService<SimpleOrmOptions>();
+            var connectionString = MongoConnectionResolver.ResolveConnectionString(simpleOrmOptions);
+            return new MongoClient(connectionString);
+        });
+
         // MongoDatabaseProvider depends on ITenantProvider, which is scoped for
         // request-aware multi-tenancy. The provider therefore must not be singleton.
         services.AddScoped<MongoDatabaseProvider>();

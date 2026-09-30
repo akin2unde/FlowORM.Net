@@ -15,30 +15,19 @@ public sealed class MongoRuntimeProvider : IRuntimeDatabaseProvider, IRuntimeSch
     private readonly IMongoDatabase _db;
     private readonly ITenantProvider _tenant;
     private readonly IUserProvider _user;
-    public MongoRuntimeProvider(SimpleOrmOptions options,ITenantProvider tenant,IUserProvider user)
+    public MongoRuntimeProvider(
+        SimpleOrmOptions options,
+        ITenantProvider tenant,
+        IUserProvider user,
+        IMongoClient client)
     {
-        _tenant=tenant;
-        _user=user;
-        var connection = options.Connection;
-        var connectionString = string.IsNullOrWhiteSpace(connection.ConnectionString)
-            ? $"mongodb://{connection.Host}:{connection.Port}"
-            : connection.ConnectionString;
+        _tenant = tenant;
+        _user = user;
 
-        var databaseName = connection.DatabaseName;
-        if (string.IsNullOrWhiteSpace(databaseName) && !string.IsNullOrWhiteSpace(connection.ConnectionString))
-        {
-            databaseName = MongoUrl.Create(connection.ConnectionString).DatabaseName;
-        }
-
-        if (string.IsNullOrWhiteSpace(databaseName))
-        {
-            throw new InvalidOperationException(
-                "SimpleORM MongoDB requires a DatabaseName. Set Connection.DatabaseName or include the database name in Connection.ConnectionString.");
-        }
-
-        var client = new MongoClient(connectionString);
+        var databaseName = MongoConnectionResolver.RequireDatabaseName(options);
         _db = client.GetDatabase(databaseName);
     }
+
     private IMongoCollection<BsonDocument> Meta=>_db.GetCollection<BsonDocument>(MetadataCollection);
     private IMongoCollection<BsonDocument> Col(string e)=>_db.GetCollection<BsonDocument>(e);
     public async Task CreateEntity(RuntimeEntityDefinition d,CancellationToken ct=default)
