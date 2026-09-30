@@ -37,6 +37,10 @@ public static class SqlServerRegistration
 
         s.AddScoped<IDBSchemaSynchronizer,SqlServerSchemaSynchronizer>();
 
+        s.AddScoped<SqlServerRuntimeProvider>();
+        s.AddScoped<IRuntimeDatabaseProvider>(x => x.GetRequiredService<SqlServerRuntimeProvider>());
+        s.AddScoped<IRuntimeSchemaProvider>(x => x.GetRequiredService<SqlServerRuntimeProvider>());
+
         return s;
 
     }

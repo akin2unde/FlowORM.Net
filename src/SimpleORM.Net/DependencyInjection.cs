@@ -64,6 +64,8 @@ public static class DependencyInjection
         services.AddScoped<IExtensionService, DefaultExtensionService>();
         services.AddScoped<IAuditService, DefaultAuditService>();
         services.AddScoped<IDataRepository, DataRepository>();
+        services.AddScoped<IRuntimeDataRepository, RuntimeDataRepository>();
+        services.AddScoped<ISchemaManager, SchemaManager>();
 
         var assemblies = modelAssemblies.Length == 0
             ? AppDomain.CurrentDomain.GetAssemblies().ToList()

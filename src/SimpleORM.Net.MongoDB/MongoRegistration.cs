@@ -35,6 +35,10 @@ public static class MongoRegistration
 
         services.AddScoped<IDBSchemaSynchronizer, MongoIndexSynchronizer>();
 
+        services.AddScoped<MongoRuntimeProvider>();
+        services.AddScoped<IRuntimeDatabaseProvider>(provider => provider.GetRequiredService<MongoRuntimeProvider>());
+        services.AddScoped<IRuntimeSchemaProvider>(provider => provider.GetRequiredService<MongoRuntimeProvider>());
+
 
         // Existing MongoDB registrations remain here.
 

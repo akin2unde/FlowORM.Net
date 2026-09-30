@@ -1,3 +1,13 @@
+
+## 2026-09-30 - Runtime entities
+
+- Added `ISchemaManager` for runtime entity, field, and index management.
+- Added `IRuntimeDataRepository` without changing `IDataRepository`.
+- Added persisted runtime schema definitions.
+- Added SQL Server runtime tables/indexes and MongoDB runtime collections/indexes.
+- Added tenant-aware runtime unique/compound indexes, soft delete, versioning, Code generation, SearchParam, paging, Count and Sum.
+- Added a NuGet version badge to the README.
+
 # Changelog
 
 ## Unreleased - optimistic concurrency

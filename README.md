@@ -1,5 +1,8 @@
 # SimpleORM.Net
 
+[![NuGet](https://img.shields.io/nuget/v/SimpleORM.Net.svg?label=NuGet)](https://www.nuget.org/packages/SimpleORM.Net/)
+
+
 A lightweight, provider-agnostic ORM for .NET 10 with support for SQL Server and MongoDB.
 
 SimpleORM.Net provides a consistent repository API across relational and document databases while handling common application concerns such as multi-tenancy, automatic schema synchronization, optimistic concurrency, dynamic queries, transactions, model extensions, indexing, aggregation, soft deletion, and auditing.
@@ -21,6 +24,7 @@ SimpleORM.Net provides a consistent repository API across relational and documen
 - Soft and hard delete
 - Upsert support
 - Dynamic queries
+- Runtime-created entities and indexes
 - `SelectDynamic`
 - Expression-based filtering
 - `SearchParam` filtering
@@ -1078,3 +1082,140 @@ See the repository license for licensing information.
 # Author
 
 **Akintunde Morakinyo**
+
+---
+
+# Runtime Entities
+
+SimpleORM can create and query entities at runtime without generating CLR classes and without changing `IDataRepository`.
+
+Runtime entities use the separate `IRuntimeDataRepository` and `ISchemaManager` APIs while sharing SimpleORM concepts such as `SearchParam`, paging, tenant scoping, transactions, Code generation, soft delete, concurrency versioning, Count and Sum.
+
+## Create a Runtime Entity
+
+```csharp
+var entity = new RuntimeEntityDefinition
+{
+    Name = "CustomProduct",
+    CodePrefix = "CPR",
+    Fields =
+    [
+        new() { Name = "Name", DataType = RuntimeDataType.String, Size = 150, Required = true },
+        new() { Name = "Category", DataType = RuntimeDataType.String, Size = 50 },
+        new() { Name = "Price", DataType = RuntimeDataType.Decimal, Required = true }
+    ],
+    Indexes =
+    [
+        new RuntimeIndexDefinition
+        {
+            Name = "IX_Category_Price",
+            Fields =
+            [
+                new("Category"),
+                new("Price", IndexDirection.Descending)
+            ]
+        }
+    ]
+};
+
+await schemaManager.CreateEntity(entity);
+```
+
+SQL Server creates a physical table. MongoDB creates a collection and physical MongoDB indexes. Runtime definitions are persisted by the provider so they survive application restarts.
+
+For tenant-scoped runtime entities, managed indexes are automatically tenant-prefixed. A unique `Sku` index therefore becomes logically `(Tenant, Sku)`. Set `Global = true` for shared runtime entities.
+
+## Add and Remove Runtime Indexes
+
+```csharp
+await schemaManager.CreateIndex(
+    "CustomProduct",
+    new RuntimeIndexDefinition
+    {
+        Name = "UX_Sku",
+        Unique = true,
+        Fields = [new("Sku")]
+    });
+
+await schemaManager.DropIndex("CustomProduct", "UX_Sku");
+```
+
+MongoDB runtime indexes support ascending/descending keys, compound indexes, uniqueness, and tenant-aware keys just like model-defined indexes.
+
+## Runtime Fields and Entity Removal
+
+```csharp
+await schemaManager.AddField(
+    "CustomProduct",
+    new RuntimeFieldDefinition
+    {
+        Name = "Description",
+        DataType = RuntimeDataType.String,
+        Size = 500
+    });
+```
+
+Destructive operations must be explicitly enabled:
+
+```csharp
+await schemaManager.DropField("CustomProduct", "Description", allowDestructiveChange: true);
+await schemaManager.DropEntity("CustomProduct", allowDestructiveChange: true);
+```
+
+## Save Runtime Data
+
+```csharp
+await runtimeRepository.Save(
+    "CustomProduct",
+    new Dictionary<string, object?>
+    {
+        ["Name"] = "Samsung S26",
+        ["Category"] = "Phone",
+        ["Price"] = 950000m
+    });
+```
+
+Batch save uses the same bounded-batch approach as the normal repository:
+
+```csharp
+await runtimeRepository.Save("CustomProduct", products, cancellationToken, batch: 500);
+```
+
+## Search Runtime Data
+
+Runtime entities use the existing `SearchParam` query model:
+
+```csharp
+var search = new SearchParam
+{
+    Filters =
+    [
+        new SearchFilter { Field = "Category", Operator = SearchOperator.EQ, Value = "Phone" },
+        new SearchFilter { Field = "Price", Operator = SearchOperator.GTE, Value = 500000m }
+    ],
+    OrderBy =
+    [
+        new SearchOrder { Field = "Price", Descending = true }
+    ]
+};
+
+var result = await runtimeRepository.Select(
+    "CustomProduct",
+    search,
+    skip: 0,
+    limit: 100);
+```
+
+The result is `PagedResult<dynamic>`.
+
+Runtime entities also support:
+
+```csharp
+var item = await runtimeRepository.SelectSingle("CustomProduct", search);
+var count = await runtimeRepository.Count("CustomProduct", search);
+var total = await runtimeRepository.Sum<decimal>("CustomProduct", "Price", search);
+await runtimeRepository.Update("CustomProduct", code, values);
+await runtimeRepository.Delete("CustomProduct", code);
+```
+
+`IDataRepository` remains unchanged; use it for compile-time `DBModel` types and use `IRuntimeDataRepository` only for runtime-defined entities.
