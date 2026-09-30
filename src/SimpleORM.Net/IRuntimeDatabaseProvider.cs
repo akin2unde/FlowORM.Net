@@ -1,8 +1,6 @@
 #pragma warning disable CS1591
 using SimpleORM.Net.Query;
-
 namespace SimpleORM.Net.Abstractions;
-
 /// <summary>Low-level provider contract for runtime entities.</summary>
 public interface IRuntimeDatabaseProvider
 {

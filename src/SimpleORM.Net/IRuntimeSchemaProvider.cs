@@ -1,8 +1,6 @@
 #pragma warning disable CS1591
 using SimpleORM.Net.Runtime;
-
 namespace SimpleORM.Net.Abstractions;
-
 /// <summary>Provider-specific runtime schema operations.</summary>
 public interface IRuntimeSchemaProvider
 {

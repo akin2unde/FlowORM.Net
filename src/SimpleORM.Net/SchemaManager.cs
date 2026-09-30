@@ -1,9 +1,7 @@
 #pragma warning disable CS1591
 using SimpleORM.Net.Abstractions;
 using SimpleORM.Net.Runtime;
-
 namespace SimpleORM.Net.Services;
-
 /// <summary>Provider-neutral facade for runtime schema management.</summary>
 public sealed class SchemaManager(IRuntimeSchemaProvider provider) : ISchemaManager
 {

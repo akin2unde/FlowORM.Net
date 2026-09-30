@@ -1,9 +1,7 @@
 #pragma warning disable CS1591
 using SimpleORM.Net.Query;
 using SimpleORM.Net.Models;
-
 namespace SimpleORM.Net.Abstractions;
-
 /// <summary>Dynamic counterpart of IDataRepository for runtime-created entities.</summary>
 public interface IRuntimeDataRepository
 {
