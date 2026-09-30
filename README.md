@@ -1,475 +1,1080 @@
 # SimpleORM.Net
-[![Build](https://github.com/akin2unde/SimpleORM.Net/actions/workflows/build.yml/badge.svg)](https://github.com/akin2unde/SimpleORM.Net/actions/workflows/build.yml)
-[![NuGet](https://img.shields.io/nuget/v/SimpleORM.Net.svg)](https://www.nuget.org/packages/SimpleORM.Net)
-[![Downloads](https://img.shields.io/nuget/dt/SimpleORM.Net.svg)](https://www.nuget.org/packages/SimpleORM.Net)
-[![License](https://img.shields.io/github/license/akin2unde/SimpleORM.Net)](LICENSE)
 
-A lightweight, provider-based ORM for .NET 10 focused on a small repository API, model conventions, batching, transactions, extensions, multi-tenancy, auditing and provider-specific schema management.
-
-**Author:** Akintunde Morakinyo  
-**Repository:** `akin2unde/SimpleORM.Net`
-
-## Packages
-
-- `SimpleORM.Net` — core repository, metadata, query model and transaction abstractions.
-- `SimpleORM.Net.SqlServer` — SQL Server provider and schema synchronization.
-- `SimpleORM.Net.MongoDB` — MongoDB provider and index synchronization.
-- `SimpleORM.Net.AspNetCore` — ASP.NET Core tenant/user integration, error middleware and payload encryption.
-- `SimpleORM.Net.Http` — typed HTTP request wrapper.
-
-
-## Quick start
-
-```csharp
-builder.Services.AddSimpleOrm(
-    options =>
-    {
-        options.Database = DatabaseType.SqlServer;
-        options.Connection.Host = "localhost";
-        options.Connection.Port = 1433;
-        options.Connection.Database = "CommerceDb";
-        options.Connection.Username = "sa";
-        options.Connection.Password = configuration["SimpleOrm:Password"];
-        options.DefaultStringLength = 50;
-        options.CodeGeneration.Length = 10;
-        options.Batch.Save = 100;
-        options.Batch.Select = 100;
-        options.Concurrency.Enabled = true; // default
-        options.AutoMigration = true;
-    },
-    typeof(Product).Assembly);
-
-// Provider registration intentionally remains explicit.
-builder.Services.AddSimpleOrmSqlServer();
-builder.Services.AddSimpleOrmAspNetCore();
-```
-
-For MongoDB, set `options.Database = DatabaseType.MongoDb` and call `AddSimpleOrmMongoDB()`.
-
-## Models and code generation
-
-Every persisted model inherits `DBModel`. A table/collection is inferred automatically; `[DBTable]` is only needed to override its database name.
-
-```csharp
-public sealed class Product : DBModel
-{
-    public string Name { get; set; } = string.Empty;
-    public decimal Price { get; set; }
-
-    public override string GetPrefix() => "PRD";
-}
-```
-
-Every model instance can generate a code:
-
-```csharp
-var product = new Product();
-var code = product.GenerateCode();       // PRD-XXXXXXXXXX
-var shortCode = product.GenerateCode(6); // PRD-XXXXXX
-```
-
-When `Code` is empty during an insert, the repository calls the model's `GenerateCode` using the configured/model metadata length. `Code` is unique by convention.
-
-## Optimistic concurrency
-
-SimpleORM protects updates and deletes from lost updates by default. Every `DBModel` has a `Version` managed by the ORM. The database mutation matches the version originally loaded and increments it atomically when the write succeeds. No separate pre-read is added to the normal write path.
-
-```csharp
-var product = await repository.GetByCode<Product>("PRD-001", ct);
-product!.Price = 120;
-product.DataState = DataState.Changed;
-await repository.Save(product, ct);
-```
-
-If another request changed the same record after it was loaded, `Save` throws `DBConcurrencyException`. For detached/API update models, round-trip the `Version` value returned by the read; omitting or changing it can correctly produce a conflict once the stored record has advanced. With the optional ASP.NET Core error middleware enabled, this exception is returned as HTTP `409 Conflict`.
-
-Concurrency protection is enabled globally by default and can be configured explicitly:
-
-```csharp
-options.Concurrency.Enabled = true;
-```
-
-Models that intentionally use last-write-wins behavior can opt out:
-
-```csharp
-[DisableConcurrencyCheck]
-public sealed class TelemetryLog : DBModel
-{
-    public string Message { get; set; } = string.Empty;
-}
-```
-
-SQL Server keeps bulk performance by checking `Version` in the existing staging-table join. MongoDB includes `Version` in each bulk-write filter. SQL auto-migration seeds existing rows with version `1`; older MongoDB documents without a version are treated as version `1` on their first protected mutation.
-
-## Repository API
-
-Inject one repository for all models:
-
-```csharp
-public sealed class ProductService(IDataRepository repository)
-{
-    public Task<Product?> Get(string code, CancellationToken ct) =>
-        repository.GetByCode<Product>(code, ct);
-}
-```
-
-### Select
-
-```csharp
-var page = await repository.Select<Product>(
-    skip: 0,
-    limit: 100,
-    cancellationToken: ct,
-    batch: 100);
-
-var active = await repository.Select<Product>(
-    x => x.Active,
-    skip: 0,
-    limit: 100,
-    cancellationToken: ct);
-```
-
-`limit: 0` means fetch all matching records. Physical batches are capped internally at 500.
-
-For joins, selected fields, ordering and richer filtering, pass `SearchParam` or combine it with an expression.
-
-### SelectSingle
-
-```csharp
-var product = await repository.SelectSingle<Product>(
-    x => x.Code == code,
-    ct);
-```
-
-### Search
-
-Strings are searchable by convention unless `[NotSearchable]` is applied.
-
-```csharp
-var result = await repository.Search<Product>(
-    "milk",
-    cancellationToken: ct);
-```
-
-### Count
-
-```csharp
-long total = await repository.Count<Product>(cancellationToken: ct);
-long active = await repository.Count<Product>(x => x.Active, cancellationToken: ct);
-```
-
-### Save and DataState
-
-One `Save` API handles insert, update and delete through `DataState`.
-
-```csharp
-product.DataState = DataState.New;
-await repository.Save(product, ct);
-
-product.Price = 2500;
-product.DataState = DataState.Changed;
-await repository.Save(product, ct);
-
-product.DataState = DataState.Removed;
-await repository.Save(product, ct);
-```
-
-Models use soft delete by default. Apply `[HardDelete]` to models that must be physically deleted.
-
-Batch save places `CancellationToken` before the optional batch parameter:
-
-```csharp
-await repository.Save(products, ct, batch: 200);
-```
-
-## Transactions
-
-Normal saves manage their transaction automatically. Use `IDBTransactionManager.Execute` when several repository operations must commit or roll back together.
-
-```csharp
-return await transactionManager.Execute<IReadOnlyList<Product>>(
-    async () =>
-    {
-        var savedProducts = await repository.Save(products, ct);
-
-        if (inventories.Count > 0)
-        {
-            await repository.Save(inventories, ct);
-        }
-
-        return savedProducts;
-    },
-    ct);
-```
-
-Nested repository calls reuse the current scoped transaction; they do not independently commit it.
-
-## SearchParam, joins and selected fields
-
-`SearchParam` supports filters, ordering, join type and selected fields. Expression filters can be used alone or merged with a `SearchParam`.
-
-```csharp
-var result = await repository.Select<Order>(
-    x => x.Total > 1000,
-    searchParam,
-    skip: 0,
-    limit: 100,
-    cancellationToken: ct);
-```
-
-## Debug queries
-
-Generate a provider-specific query with values embedded for debugging only:
-
-```csharp
-var query = repository.GenerateDebugQuery<Product>(searchParam);
-```
-
-The generated text is for inspection and is never used as the execution path.
-
-## Extensions
-
-Apply `[Extendable]` to models that support dynamic extension definitions. `DBModel.Extended` contains loaded extension values. Definitions describe field code/name, data type, required state, size and default value.
-
-`options.Extensions.RequirePublish = false` makes saved definitions immediately available. Set it to `true` to require explicit publishing.
-
-The sample API contains end-to-end definition, publishing, loading and saving examples.
-
-## Ignored properties
-
-Use `[Ignore]` for model properties that belong to runtime/application state but must never be persisted:
-
-```csharp
-public sealed class Country : DBModel
-{
-    public string Name { get; set; } = string.Empty;
-
-    [Ignore]
-    public string? DisplayLabel { get; set; }
-}
-```
-
-Ignored properties are excluded from SQL Server schema generation, selects, inserts, updates, filters, joins, and ordering. MongoDB also omits ignored members from BSON persistence. Existing ignored SQL columns are only physically removed when destructive migrations are enabled.
-
-## Multi-tenancy
-
-Enable tenant filtering globally:
-
-```csharp
-options.MultiTenancy.Enabled = true;
-options.MultiTenancy.JwtClaim = "tenant";
-```
-
-ASP.NET Core can resolve the tenant from the configured JWT claim. Tenant behavior remains optional.
-
-Use `[Global]` for shared models that must not require or persist a tenant even when application multi-tenancy is enabled:
-
-```csharp
-[Global]
-public sealed class Country : DBModel
-{
-    public string Name { get; set; } = string.Empty;
-}
-```
-
-Normal models remain tenant scoped. Global models skip tenant filters on read/update/delete and the inherited `Tenant` property is excluded from persistence. Typical uses include tenant records themselves and shared reference data such as countries.
-
-## Audit and error logging
-
-Audit trails are opt-in globally and can be disabled per model. Error logging middleware is also optional and can persist useful failure context such as request URL and payload information where available.
-
-Stale error logs can be physically removed on a UTC cron schedule:
-
-```csharp
-options.ErrorLog.Enabled = true;
-options.ErrorLog.AutoDeleteEnabled = true;
-options.ErrorLog.RetentionDays = 60;
-options.ErrorLog.CleanupCron = "0 0 1 */3 *"; // every quarter
-```
-
-The cleanup above runs every three months and deletes error-log records whose `CreatedAt` is older than 60 days. A monthly schedule can use `0 0 1 * *`. Cleanup bypasses tenant scoping because retention is system-level maintenance.
-
-Any model can opt into the same retention mechanism:
-
-```csharp
-[AutoDelete(60, "0 0 1 * *")]
-public sealed class TemporaryImport : DBModel
-{
-}
-```
-
-
-## Enum and string conventions
-
-```csharp
-options.DefaultStringLength = 50;
-options.EnumStorage = EnumStorage.String;
-```
-
-Individual model attributes can override supported conventions. Password/sensitive return values can use `[DefaultOnReturn]` so their values are reset after materialization.
-
-## Schema management
-
-SQL Server auto-migration synchronizes supported table, column, key and index changes and records migration failures. MongoDB intentionally avoids relational-style migrations and synchronizes indexes instead.
-
-## Raw provider queries
-
-`IDBQuery` is available for advanced provider-specific direct queries and supports dynamic or typed result shapes. Prefer `IDataRepository` for normal application CRUD.
-
-## Bulk-write performance
-
-SQL Server batch inserts use `SqlBulkCopy`. Batch updates and deletes stage rows into a temporary table and apply one set-based statement per SimpleORM batch, reducing per-row database round-trips. MongoDB continues to use native bulk writes. For performance comparisons, use the same batch size for both providers; `500` is the maximum SimpleORM physical batch size.
-
-See `docs/PERFORMANCE-AND-CORRECTNESS-2026-09-04.md` for the changes made after the 1,000,000-record Docker benchmark and the next-run guidance.
-
-## Sample project
-
-`samples/SimpleORM.Net.Sample.Api` demonstrates:
-
-- Controller → application service → `IDataRepository`
-- expression and `SearchParam` selects
-- `SelectSingle`, `GetByCode`, search and count
-- single and batch saves
-- `DataState`
-- transactions across multiple model types
-- extensions and publishing
-- debug query generation
-- SQL Server/MongoDB provider selection
-- ASP.NET Core integration
-
-## Build and test
+A lightweight, provider-agnostic ORM for .NET 10 with support for SQL Server and MongoDB.
+
+SimpleORM.Net provides a consistent repository API across relational and document databases while handling common application concerns such as multi-tenancy, automatic schema synchronization, optimistic concurrency, dynamic queries, transactions, model extensions, indexing, aggregation, soft deletion, and auditing.
+
+## Features
+
+- .NET 10
+- SQL Server
+- MongoDB
+- Provider-independent repository API
+- Dependency injection
+- Automatic schema synchronization
+- Multi-tenancy
+- Global/shared models
+- CRUD operations
+- Batch operations
+- Transactions
+- Optimistic concurrency
+- Soft and hard delete
+- Upsert support
+- Dynamic queries
+- `SelectDynamic`
+- Expression-based filtering
+- `SearchParam` filtering
+- Sorting and paging
+- Joins
+- Count and Sum aggregation
+- Unique constraints
+- Single and composite indexes
+- Automatic Code generation
+- Model extensions / EAV fields
+- Audit trail
+- Error logging
+- Automatic stale-data cleanup
+- SQL Server bulk operations
+- MongoDB nested-document queries
+- MongoDB dictionary filtering
+- Full connection-string support
+- CancellationToken support
+- XML documentation
+
+---
+
+# Installation
+
+Install the core package:
 
 ```bash
-dotnet restore SimpleORM.Net.slnx
-dotnet build SimpleORM.Net.slnx -c Release
-dotnet test SimpleORM.Net.slnx -c Release
+dotnet add package SimpleORM.Net
 ```
 
-XML documentation and warnings-as-errors are enabled repository-wide.
+Then install the provider required by your application.
 
-## NuGet publishing
+### SQL Server
 
-GitHub Actions includes:
+```bash
+dotnet add package SimpleORM.Net.SqlServer
+```
 
-- `.github/workflows/build.yml` — restore, build and test pushes/PRs.
-- `.github/workflows/nuget.yml` — build, test, pack and publish tags matching `v*`.
+### MongoDB
 
-Create a GitHub Actions secret named `NUGET_API_KEY`, then push a version tag such as `v0.1.0` to run the publishing workflow.
+```bash
+dotnet add package SimpleORM.Net.MongoDB
+```
 
-## Roadmap
+---
 
-Future phases are intended to add more providers and provider-neutral data movement between database types without changing application models or the repository CRUD API.
+# Getting Started
 
-## License
+## SQL Server
 
-MIT. See `LICENSE`.
-
-## Full connection strings
-
-`Connection.ConnectionString` can be used when the application already owns a complete provider connection string. When it is supplied, the SQL Server and MongoDB providers use it directly instead of rebuilding a connection from `Host`, `Port`, `DatabaseName`, `Username`, `Password`, `UseSsl` and `Options`.
+Register SimpleORM:
 
 ```csharp
 builder.Services.AddSimpleOrm(options =>
 {
-    options.Database = DatabaseType.SqlServer;
-    options.Connection.ConnectionString = configuration.GetConnectionString("CommerceDb");
+    options.Connection.ConnectionString =
+        builder.Configuration.GetConnectionString("DefaultConnection");
 });
+
+builder.Services.AddSimpleOrmSqlServer();
 ```
 
-MongoDB works the same way:
+Example `appsettings.json`:
+
+```json
+{
+  "ConnectionStrings": {
+    "DefaultConnection": "Server=localhost;Database=CommerceDb;User Id=sa;Password=YourPassword;TrustServerCertificate=True"
+  }
+}
+```
+
+---
+
+## MongoDB
 
 ```csharp
-options.Database = DatabaseType.MongoDb;
-options.Connection.ConnectionString =
-    "mongodb://user:password@localhost:27017/commerce";
+builder.Services.AddSimpleOrm(options =>
+{
+    options.Connection.ConnectionString =
+        builder.Configuration.GetConnectionString("MongoDb");
+});
+
+builder.Services.AddSimpleOrmMongoDB();
 ```
 
-Use either the full `ConnectionString` or the individual connection properties. A non-empty `ConnectionString` takes precedence.
+Example:
 
-## Indexes and tenant-aware uniqueness
+```json
+{
+  "ConnectionStrings": {
+    "MongoDb": "mongodb://localhost:27017/CommerceDb"
+  }
+}
+```
 
-Use `[Index]` for query/sort performance where duplicate values are allowed. `[Unique]` remains the constraint for values that must not repeat.
+When `ConnectionString` is supplied, it takes precedence over the individual connection properties.
+
+---
+
+# Connection Configuration
+
+You can provide a complete connection string:
+
+```csharp
+options.Connection.ConnectionString =
+    builder.Configuration.GetConnectionString("DefaultConnection");
+```
+
+Or configure the connection using the individual connection properties supported by the provider.
+
+Using `ConnectionString` is recommended when your application already manages database connections through normal .NET configuration.
+
+---
+
+# Creating a Model
+
+Models inherit from `DBModel`.
+
+```csharp
+public class Product : DBModel
+{
+    public string Name { get; set; } = string.Empty;
+
+    public string Category { get; set; } = string.Empty;
+
+    public decimal Price { get; set; }
+
+    public ProductStatus Status { get; set; }
+}
+```
+
+`DBModel` provides the common SimpleORM model infrastructure including Code, state tracking, tenant information, concurrency versioning, timestamps, and other ORM metadata.
+
+---
+
+# Repository
+
+Inject `IDataRepository` into your service:
+
+```csharp
+public class ProductService
+{
+    private readonly IDataRepository _repository;
+
+    public ProductService(IDataRepository repository)
+    {
+        _repository = repository;
+    }
+}
+```
+
+The same repository API works with the configured database provider.
+
+---
+
+# Creating Records
+
+```csharp
+var product = new Product
+{
+    Name = "Sample Product",
+    Category = "Electronics",
+    Price = 2500,
+    DataState = DataState.New
+};
+
+await _repository.Save(product);
+```
+
+SimpleORM automatically generates a Code when one has not been supplied.
+
+---
+
+# Updating Records
+
+Load the record:
+
+```csharp
+var product = await _repository.SelectSingle<Product>(
+    x => x.Code == productCode);
+```
+
+Modify it:
+
+```csharp
+product.Price = 3000;
+product.DataState = DataState.Changed;
+
+await _repository.Save(product);
+```
+
+---
+
+# Batch Save
+
+SimpleORM supports batch operations:
+
+```csharp
+await _repository.Save(products);
+```
+
+The default batch size is 100.
+
+The maximum physical batch size is 500. Larger collections are automatically divided into safe batches.
+
+You can override the batch size when required.
+
+---
+
+# Select
+
+## Expression Query
+
+```csharp
+var result = await _repository.Select<Product>(
+    x => x.Status == ProductStatus.Active);
+```
+
+---
+
+## Paging
+
+```csharp
+var result = await _repository.Select<Product>(
+    skip: 0,
+    limit: 100);
+```
+
+You can also use the convenience overload:
+
+```csharp
+var result = await _repository.Select<Product>(0, 100);
+```
+
+---
+
+## Fetch All
+
+A limit of `0` means return all matching records:
+
+```csharp
+var result = await _repository.Select<Product>(
+    skip: 0,
+    limit: 0);
+```
+
+SimpleORM may still read the records internally in bounded batches.
+
+---
+
+# SelectSingle
+
+```csharp
+var product = await _repository.SelectSingle<Product>(
+    x => x.Code == productCode);
+```
+
+---
+
+# SearchParam
+
+`SearchParam` provides dynamic filtering for scenarios where the query is constructed at runtime, such as an API request.
+
+Example:
+
+```csharp
+var search = new SearchParam
+{
+    Filters =
+    [
+        new SearchFilter
+        {
+            Field = "Status",
+            Operator = SearchOperator.EQ,
+            Value = ProductStatus.Active
+        }
+    ]
+};
+
+var result = await _repository.Select<Product>(search);
+```
+
+Supported operators include:
+
+- `EQ`
+- `NEQ`
+- `GT`
+- `GTE`
+- `LT`
+- `LTE`
+- `Contains`
+- `StartsWith`
+- `EndsWith`
+- `In`
+- `NotIn`
+- `IsNull`
+- `IsNotNull`
+- `Between`
+- `NotBetween`
+
+---
+
+# SelectDynamic
+
+`SelectDynamic` allows you to retrieve only selected fields instead of materializing the complete model.
+
+This is useful for reporting, dashboards, grids, APIs, and other projection-heavy workloads.
+
+```csharp
+var search = new SearchParam
+{
+    Fields =
+    [
+        "Code",
+        "Name",
+        "Category",
+        "Price"
+    ]
+};
+
+var result = await _repository.SelectDynamic<Product>(
+    search,
+    skip: 0,
+    limit: 100);
+```
+
+The result is:
+
+```csharp
+PagedResult<dynamic>
+```
+
+Only the requested fields are returned.
+
+---
+
+# Sorting
+
+Sorting can be supplied through the query definition.
+
+For example:
+
+```text
+Price DESC
+Name ASC
+```
+
+Multiple sort fields can be used where supported.
+
+---
+
+# Count
+
+SimpleORM performs Count directly in the database.
+
+```csharp
+var count = await _repository.Count<Product>(
+    x => x.Status == ProductStatus.Active);
+```
+
+This does not load all matching records into application memory.
+
+---
+
+# Sum
+
+SimpleORM supports database-side Sum aggregation.
+
+```csharp
+var total = await _repository.Sum<Sale, decimal>(
+    x => x.TotalAmount,
+    x => x.Status == SaleStatus.Completed);
+```
+
+`SearchParam` can also be used when the filter is dynamic.
+
+Aggregation is executed by the database provider rather than loading all matching records into .NET.
+
+---
+
+# Indexes
+
+Use `[Index]` when a property should have a non-unique database index.
 
 ```csharp
 [Index]
-public CustomerStatus Status { get; set; }
+public string Category { get; set; } = string.Empty;
+```
 
+Duplicate values are allowed.
+
+Indexes are useful for fields frequently used for:
+
+- filtering
+- sorting
+- lookups
+
+Do not index every property unnecessarily because indexes have storage and write-performance costs.
+
+---
+
+# Composite Indexes
+
+Multiple properties can participate in the same index.
+
+```csharp
+[Index("IX_Status_SoldAt", Order = 1)]
+public SaleStatus Status { get; set; }
+
+[Index(
+    "IX_Status_SoldAt",
+    Order = 2,
+    Direction = IndexDirection.Descending)]
+public DateTime SoldAt { get; set; }
+```
+
+SimpleORM creates the equivalent composite/compound index for the configured provider.
+
+---
+
+# Unique Fields
+
+Use `[Unique]` when duplicate values must not be allowed.
+
+```csharp
 [Unique]
-public string Email { get; set; } = string.Empty;
+public string Sku { get; set; } = string.Empty;
 ```
 
-Named indexes create composite indexes. `Order` controls the key order and `Direction` controls ascending/descending index keys:
+`[Unique]` is different from `[Index]`.
+
+`[Index]` improves lookup performance while allowing duplicate values.
+
+`[Unique]` enforces uniqueness at the database level.
+
+---
+
+# Multi-Tenancy
+
+SimpleORM supports tenant-aware models.
+
+When multi-tenancy is enabled, tenant-scoped queries automatically include the current tenant.
+
+Application code can therefore query normally:
 
 ```csharp
-[Index("IX_Status_Created", Order = 1)]
-public CustomerStatus Status { get; set; }
-
-[Index("IX_Status_Created", Order = 2, Direction = IndexDirection.Descending)]
-public DateTime CreatedAt { get; set; }
+var products = await _repository.Select<Product>();
 ```
 
-For tenant-scoped models SimpleORM automatically prefixes managed indexes/unique constraints with `Tenant`, because normal queries are tenant-scoped. `Code` is unique per tenant (`Tenant + Code`). Existing `[Unique]` fields are also unique per tenant (`Tenant + Email`, for example). `[Global]` models have no tenant prefix, so their `Code` and `[Unique]` values remain globally unique.
+while SimpleORM applies the tenant restriction automatically.
 
-On SQL Server, new tenant tables use `(Tenant, Code)` as the primary key. Changing an existing Code-only primary key is destructive and therefore requires `options.Migrations.AllowDestructiveChanges = true`.
+---
 
-## Sum aggregation
+# Tenant-Aware Indexes
 
-`Count` remains available as before. `Sum` performs the aggregation inside the database rather than loading matching records into memory.
+For tenant-scoped models, SimpleORM automatically includes the tenant in managed indexes where appropriate.
+
+For example:
 
 ```csharp
-var total = await repository.Sum<Sale, decimal>(
-    sale => sale.TotalAmount,
-    sale => sale.Status == SaleStatus.Completed,
-    cancellationToken: ct);
+[Index]
+public string Category { get; set; } = string.Empty;
 ```
 
-A `SearchParam` can also be supplied to the `Sum` overload. SQL Server generates `SUM(...)` over the filtered query; MongoDB uses `$match` and `$group/$sum`.
+conceptually becomes:
 
-## MongoDB nested and dictionary queries
+```text
+(Tenant, Category)
+```
 
-MongoDB supports dotted document paths through both `SearchParam` and strongly typed expressions. This is useful for nested objects and dictionaries.
+This matches the queries SimpleORM generates:
+
+```text
+Tenant = currentTenant AND Category = ...
+```
+
+---
+
+# Tenant-Aware Uniqueness
+
+Code uniqueness is tenant-aware.
+
+For a tenant model:
+
+```text
+UNIQUE(Tenant, Code)
+```
+
+This means:
+
+```text
+Tenant A + PRO-001    allowed
+Tenant B + PRO-001    allowed
+Tenant A + PRO-001    duplicate
+```
+
+The same rule applies to `[Unique]` properties.
+
+For example:
 
 ```csharp
-var blackProducts = await repository.Select<Product>(
-    product => product.Attributes["Color"] == "Black",
-    cancellationToken: ct);
-
-var lagosCustomers = await repository.Select<Customer>(
-    customer => customer.Address.City == "Lagos",
-    cancellationToken: ct);
+[Unique]
+public string Sku { get; set; } = string.Empty;
 ```
 
-Dictionary keys used by expression translation must resolve to a string value. The expression resolver translates the examples above to `Attributes.Color` and `Address.City`.
+becomes conceptually:
 
-Dynamic/API filters can use the same paths:
+```text
+UNIQUE(Tenant, Sku)
+```
+
+so two different tenants may use the same SKU while duplicates within the same tenant are rejected.
+
+---
+
+# Global Models
+
+Some data should be shared by every tenant.
+
+Use `[Global]`:
+
+```csharp
+[Global]
+public class Country : DBModel
+{
+    public string Name { get; set; } = string.Empty;
+}
+```
+
+Global models do not require a tenant.
+
+For global models:
+
+```text
+Code
+```
+
+is globally unique rather than tenant-scoped.
+
+The same applies to `[Unique]` fields.
+
+---
+
+# Optimistic Concurrency
+
+Optimistic concurrency protection is enabled by default.
+
+Every `DBModel` has an ORM-managed Version.
+
+Consider:
+
+```text
+Person A loads Product Version 4
+Person B loads Product Version 4
+
+Person A saves
+Database becomes Version 5
+
+Person B attempts to save Version 4
+```
+
+SimpleORM detects that the record changed after Person B loaded it and throws:
+
+```csharp
+DBConcurrencyException
+```
+
+This prevents silent lost updates.
+
+No additional read-before-update query is required. The version comparison is performed as part of the database update.
+
+---
+
+# Disabling Concurrency for a Model
+
+Some models may intentionally use last-write-wins behavior.
+
+Use:
+
+```csharp
+[DisableConcurrencyCheck]
+public class AuditLog : DBModel
+{
+}
+```
+
+The Version remains available, but concurrent modifications are not rejected for that model.
+
+---
+
+# Upsert
+
+SimpleORM supports Upsert for providers that implement it.
+
+Upsert means:
+
+> Update the record if it exists; otherwise insert it.
+
+Example:
+
+```csharp
+var product = new Product
+{
+    Code = "PRO-001",
+    Name = "Updated Product",
+    Price = 5000,
+
+    DataState = DataState.Changed,
+    Upsert = true
+};
+
+await _repository.Save(product);
+```
+
+This is useful for synchronization and import scenarios where the caller may not know whether the record already exists.
+
+## Upsert and Concurrency
+
+Upsert is a last-write-wins operation and therefore conflicts with normal optimistic concurrency semantics.
+
+If a model uses concurrency protection, SimpleORM does not silently bypass the Version check.
+
+Use Upsert only where last-write-wins behavior is intentional.
+
+MongoDB currently provides the primary Upsert implementation.
+
+---
+
+# Soft Delete
+
+Models can use soft-delete behavior so that deleting a record does not physically remove it from the database.
+
+Soft-deleted records are automatically excluded from normal queries.
+
+---
+
+# Hard Delete
+
+Models configured for hard deletion are physically removed from the database.
+
+Concurrency protection also applies to delete operations unless explicitly disabled for the model.
+
+---
+
+# Transactions
+
+SimpleORM supports transactions.
+
+Operations automatically reuse an existing SimpleORM transaction when one is active.
+
+This allows multiple repository operations to participate in the same transaction without each operation independently committing.
+
+Example:
+
+```csharp
+await transactionManager.Execute(async () =>
+{
+    await _repository.Save(customer);
+    await _repository.Save(order);
+    await _repository.Save(payment);
+});
+```
+
+The transaction is committed only when the outer transaction completes successfully.
+
+---
+
+# Automatic Schema Synchronization
+
+SimpleORM can synchronize the database schema with model metadata when the application starts.
+
+Depending on the provider and configuration, synchronization can handle changes such as:
+
+- tables/collections
+- columns
+- column types
+- keys
+- unique constraints
+- indexes
+
+MongoDB schema synchronization focuses primarily on indexes because MongoDB documents do not require relational table schemas.
+
+Potentially destructive schema changes are controlled separately and should be enabled deliberately.
+
+---
+
+# Model Extensions
+
+SimpleORM supports extending models without adding physical properties to the original model.
+
+An extendable model can store dynamic extension values through:
+
+```csharp
+model.Extended
+```
+
+Extension definitions can describe properties such as:
+
+- FieldCode
+- FieldName
+- DataType
+- Required
+- Size
+- DefaultValue
+
+Extension values are loaded and saved with the owning model.
+
+This is useful for applications that allow customers or administrators to define additional fields at runtime.
+
+---
+
+# MongoDB Nested Documents
+
+MongoDB supports querying nested document properties.
+
+For example:
+
+```csharp
+public class Customer : DBModel
+{
+    public Address Address { get; set; } = new();
+}
+```
+
+can be queried using an expression:
+
+```csharp
+var customers = await _repository.Select<Customer>(
+    x => x.Address.City == "Lagos");
+```
+
+Deeper paths are also supported:
+
+```csharp
+x => x.Address.Country.Code == "NG"
+```
+
+These are translated to MongoDB dotted document paths.
+
+---
+
+# MongoDB Dictionary Queries
+
+MongoDB models can contain dynamic dictionary data:
+
+```csharp
+public Dictionary<string, object?> Attributes { get; set; } = [];
+```
+
+For example, a document might contain:
+
+```json
+{
+  "Attributes": {
+    "Color": "Black",
+    "Storage": 256
+  }
+}
+```
+
+You can query dictionary fields using expressions:
+
+```csharp
+var products = await _repository.Select<Product>(
+    x => x.Attributes["Color"] == "Black");
+```
+
+Numeric comparisons are also supported:
+
+```csharp
+var products = await _repository.Select<Product>(
+    x => (int)x.Attributes["Storage"] >= 256);
+```
+
+And conditions can be combined:
+
+```csharp
+var products = await _repository.Select<Product>(
+    x =>
+        x.Attributes["Color"] == "Black" &&
+        (int)x.Attributes["Storage"] >= 256);
+```
+
+---
+
+# MongoDB Dynamic Nested Queries
+
+The same nested fields can be supplied dynamically through `SearchParam`.
+
+For example:
 
 ```json
 {
   "filters": [
-    { "field": "Attributes.Color", "operator": "EQ", "value": "Black" },
-    { "field": "Attributes.Storage", "operator": "GTE", "value": 256 }
-  ],
-  "orderBy": [
-    { "field": "Attributes.Storage", "descending": true }
-  ],
-  "fields": ["Code", "Name", "Attributes.Color", "Attributes.Storage"]
+    {
+      "field": "Attributes.Color",
+      "operator": "EQ",
+      "value": "Black"
+    },
+    {
+      "field": "Attributes.Storage",
+      "operator": "GTE",
+      "value": 256
+    }
+  ]
 }
 ```
 
-MongoDB supports these nested paths for filtering, ordering, `SelectDynamic`, and `Sum`. SQL Server deliberately rejects document/dictionary dotted paths unless represented through the ORM's relational join facilities.
+MongoDB translates these to dotted document paths.
 
-## Upsert
+Nested fields can also participate in:
 
-`DBModel.Upsert` requests insert-or-replace behavior when a MongoDB model is saved as `DataState.Changed`:
+- filtering
+- sorting
+- `SelectDynamic`
+- Sum aggregation
+
+This allows both strongly typed application queries and runtime-generated API queries to use the same document structure.
+
+---
+
+# MongoDB SelectDynamic
+
+Nested fields can be projected without returning the complete document.
+
+For example:
 
 ```csharp
-product.DataState = DataState.Changed;
-product.Upsert = true;
-await repository.Save(product, ct);
+var search = new SearchParam
+{
+    Fields =
+    [
+        "Code",
+        "Name",
+        "Attributes.Color",
+        "Attributes.Storage"
+    ]
+};
+
+var result = await _repository.SelectDynamic<Product>(
+    search);
 ```
 
-If the matching MongoDB document exists it is replaced; if it does not exist MongoDB inserts it. `Upsert` is an instruction property and is not persisted.
+Only the requested fields are projected by MongoDB.
 
-Optimistic concurrency and last-write-wins upsert have conflicting semantics, so MongoDB rejects `Upsert = true` while concurrency protection is enabled for the model. Use normal `DataState.New` inserts where possible. If last-write-wins upsert is intentionally required, opt that model out with `[DisableConcurrencyCheck]`.
+---
 
-`Upsert` is currently a MongoDB provider feature; SQL Server does not currently translate `DBModel.Upsert` into a MERGE/upsert operation.
+# SQL Server Bulk Operations
+
+SimpleORM's SQL Server provider uses bulk and set-based operations for high-volume writes.
+
+Insert operations use `SqlBulkCopy`.
+
+Batch updates use staging tables and set-based updates rather than issuing one SQL command for every model.
+
+This also integrates with optimistic concurrency without requiring a separate read-before-write operation.
+
+---
+
+# Automatic Code Generation
+
+`DBModel` supports automatic Code generation.
+
+Models can override the prefix:
+
+```csharp
+public class Product : DBModel
+{
+    public override string GetPrefix()
+    {
+        return "PRO";
+    }
+}
+```
+
+Generated Codes use randomized characters rather than sequential database counters.
+
+---
+
+# Audit Trail
+
+SimpleORM can maintain audit information for models where auditing is enabled.
+
+Audit functionality is optional and can be configured according to application requirements.
+
+---
+
+# Error Logging
+
+SimpleORM can persist application/ORM errors to the configured database when database error logging is enabled.
+
+Error logging is optional.
+
+Retention can also be configured so old error records are automatically removed.
+
+---
+
+# Automatic Stale-Data Cleanup
+
+Models can define automatic retention policies.
+
+For example:
+
+```csharp
+[AutoDelete(60, "0 0 1 * *")]
+public class TemporaryLog : DBModel
+{
+}
+```
+
+This allows stale records to be periodically removed according to model-specific retention rules.
+
+---
+
+# CancellationToken
+
+Async repository operations support `CancellationToken`.
+
+Example:
+
+```csharp
+await _repository.Select<Product>(
+    x => x.Status == ProductStatus.Active,
+    cancellationToken);
+```
+
+This allows HTTP request cancellation and application shutdown signals to propagate to database operations.
+
+---
+
+# Provider Independence
+
+Application code depends on:
+
+```csharp
+IDataRepository
+```
+
+rather than directly depending on SQL Server or MongoDB.
+
+For example:
+
+```csharp
+await _repository.Select<Product>(
+    x => x.Status == ProductStatus.Active);
+```
+
+remains the same regardless of the configured provider.
+
+Some provider-specific capabilities, particularly document-oriented MongoDB features, naturally have no SQL Server equivalent.
+
+SimpleORM throws an explicit unsupported-operation error rather than silently generating incorrect queries when a feature cannot be represented by the active provider.
+
+---
+
+# Performance
+
+SimpleORM is designed to avoid unnecessary database round trips.
+
+Key performance features include:
+
+- SQL Server `SqlBulkCopy`
+- set-based SQL updates
+- configurable batching
+- maximum physical batch size of 500
+- MongoDB bulk operations
+- database-side filtering
+- database-side Count and Sum
+- database-side dynamic projection
+- indexes
+- optimistic concurrency without read-before-update
+- transaction reuse
+
+Actual performance depends on database configuration, indexes, network latency, model complexity, hardware, and workload.
+
+---
+
+# Sample Project
+
+The repository includes a sample project demonstrating the major SimpleORM features.
+
+The sample covers areas such as:
+
+- dependency injection
+- SQL/Mongo configuration
+- CRUD
+- paging
+- filtering
+- `SearchParam`
+- `SelectDynamic`
+- Count
+- Sum
+- transactions
+- model extensions
+- indexing
+- multi-tenancy
+
+Use the sample project alongside this README when integrating SimpleORM into a new application.
+
+---
+
+# Documentation
+
+Additional documentation is available in the `docs` directory.
+
+This includes more detailed information about architecture and advanced features such as indexing, aggregation, MongoDB document queries, performance, concurrency, and model extensions.
+
+---
+
+# NuGet
+
+Install the core package:
+
+```bash
+dotnet add package SimpleORM.Net
+```
+
+SQL Server:
+
+```bash
+dotnet add package SimpleORM.Net.SqlServer
+```
+
+MongoDB:
+
+```bash
+dotnet add package SimpleORM.Net.MongoDB
+```
+
+Package versions and release history are available through NuGet and the repository releases.
+
+---
+
+# Contributing
+
+Contributions, bug reports, feature requests, tests, and documentation improvements are welcome.
+
+When contributing:
+
+1. Keep provider-independent behavior in the core package.
+2. Keep database-specific behavior in the appropriate provider.
+3. Add tests for new functionality.
+4. Update documentation when public behavior changes.
+5. Preserve backward compatibility where practical.
+
+---
+
+# License
+
+See the repository license for licensing information.
+
+---
+
+# Author
+
+**Akintunde Morakinyo**
