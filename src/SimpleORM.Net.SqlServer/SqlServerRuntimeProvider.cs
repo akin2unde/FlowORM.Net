@@ -141,7 +141,7 @@ public async Task<IReadOnlyList<dynamic>> Select(string entity,SearchParam searc
 {
     var d=await Required(entity,ct);
     var (where,ps)=Where(d,search);
-    var fields=search.Fields.Count==0?"*":string.Join(",",search.Fields.Select(x=>$"[{Esc(ResolveField(d,x))}]"));
+    var fields=search.Fields.Count==0?"*":string.Join(",",search.Fields.Select(x=>$"{FieldExpression(d,x)} AS [{Esc(x.Replace('.', '_'))}]"));
     var order=Order(d,search);
     var page=limit>0?$" OFFSET {skip} ROWS FETCH NEXT {limit} ROWS ONLY":$" OFFSET {skip} ROWS";
     return await Read($"SELECT {fields} FROM [{Esc(entity)}] {where} {order}{page}",ps,ct);
@@ -165,23 +165,98 @@ public async Task<object?> Sum(string entity,string field,SearchParam search,Can
     var d=await Required(entity,ct);
     var f=ResolveField(d,field);
     var (where,ps)=Where(d,search);
-    return await Scalar($"SELECT SUM([{Esc(f)}]) FROM [{Esc(entity)}] {where}",ps,ct);
+    return await Scalar($"SELECT SUM({FieldExpression(d, f)}) FROM [{Esc(entity)}] {where}",ps,ct);
 }
-public async Task<IReadOnlyList<dynamic>> Save(string entity,IReadOnlyList<IDictionary<string,object?>> data,IDBTransaction transaction,CancellationToken ct=default)
+public async Task<IReadOnlyList<dynamic>> Save(
+    string entity,
+    IReadOnlyList<IDictionary<string, object?>> data,
+    bool upsert,
+    IDBTransaction transaction,
+    CancellationToken ct = default)
 {
-    var d=await Required(entity,ct);
-    var tx=(SqlTx)transaction;
-    var result=new List<dynamic>();
-    foreach(var source in data){ var row=PrepareInsert(d,source);
-    var keys=row.Keys.ToList();
-    await using var cmd=tx.Connection.CreateCommand();
-    cmd.Transaction=tx.Transaction;
-    cmd.CommandText=$"INSERT INTO [{Esc(entity)}] ({string.Join(",",keys.Select(x=>$"[{Esc(x)}]"))}) VALUES ({string.Join(",",keys.Select((_,i)=>"@p"+i))})";
-    for(int i=0;i<keys.Count;i++)cmd.Parameters.AddWithValue("@p"+i,row[keys[i]]??DBNull.Value);
-    await cmd.ExecuteNonQueryAsync(ct);
-    result.Add(ToDynamic(row));
-} return result;
+    var definition = await Required(entity, ct);
+
+    if (upsert && definition.ConcurrencyEnabled)
+    {
+        throw new InvalidOperationException(
+            $"Runtime entity '{entity}' has optimistic concurrency enabled. " +
+            "Upsert uses last-write-wins semantics, so disable concurrency for this runtime entity before using upsert.");
+    }
+
+    var sqlTransaction = (SqlTx)transaction;
+    var result = new List<dynamic>();
+
+    foreach (var source in data)
+    {
+        var row = PrepareInsert(definition, source);
+
+        if (upsert)
+        {
+            await UpsertRow(entity, definition, row, sqlTransaction, ct);
+        }
+        else
+        {
+            await InsertRow(entity, row, sqlTransaction, ct);
+        }
+
+        result.Add(ToDynamic(row));
+    }
+
+    return result;
 }
+
+private static async Task InsertRow(
+    string entity,
+    Dictionary<string, object?> row,
+    SqlTx transaction,
+    CancellationToken ct)
+{
+    var keys = row.Keys.ToList();
+    await using var command = transaction.Connection.CreateCommand();
+    command.Transaction = transaction.Transaction;
+    command.CommandText =
+        $"INSERT INTO [{Esc(entity)}] " +
+        $"({string.Join(",", keys.Select(x => $"[{Esc(x)}]"))}) " +
+        $"VALUES ({string.Join(",", keys.Select((_, i) => "@p" + i))})";
+
+    for (var index = 0; index < keys.Count; index++)
+    {
+        command.Parameters.AddWithValue("@p" + index, row[keys[index]] ?? DBNull.Value);
+    }
+
+    await command.ExecuteNonQueryAsync(ct);
+}
+
+private async Task UpsertRow(
+    string entity,
+    RuntimeEntityDefinition definition,
+    Dictionary<string, object?> row,
+    SqlTx transaction,
+    CancellationToken ct)
+{
+    var code = Convert.ToString(row["Code"], CultureInfo.InvariantCulture)
+        ?? throw new InvalidOperationException("Runtime upsert requires a Code.");
+
+    await using var exists = transaction.Connection.CreateCommand();
+    exists.Transaction = transaction.Transaction;
+    exists.Parameters.AddWithValue("@code", code);
+    var scope = Scope(definition, exists);
+    exists.CommandText = $"SELECT COUNT_BIG(1) FROM [{Esc(entity)}] WHERE [Code]=@code{scope}";
+
+    var count = Convert.ToInt64(await exists.ExecuteScalarAsync(ct) ?? 0, CultureInfo.InvariantCulture);
+    if (count == 0)
+    {
+        await InsertRow(entity, row, transaction, ct);
+        return;
+    }
+
+    var changes = row
+        .Where(item => IsUserField(definition, item.Key))
+        .ToDictionary(item => item.Key, item => item.Value, StringComparer.OrdinalIgnoreCase);
+
+    await Update(entity, code, changes, transaction, ct);
+}
+
 public async Task Update(string entity,string code,IDictionary<string,object?> data,IDBTransaction transaction,CancellationToken ct=default)
 {
     var d=await Required(entity,ct);
@@ -213,6 +288,89 @@ public async Task Delete(string entity,string code,IDBTransaction transaction,Ca
     if(d.SoftDelete)cmd.Parameters.AddWithValue("@deleted",DateTime.UtcNow);
     await cmd.ExecuteNonQueryAsync(ct);
 }
+public async Task<long> Update(
+    string entity,
+    SearchParam search,
+    IDictionary<string, object?> data,
+    IDBTransaction transaction,
+    CancellationToken ct = default)
+{
+    var definition = await Required(entity, ct);
+    var sqlTransaction = (SqlTx)transaction;
+    var allowed = data.Where(item => IsUserField(definition, item.Key)).ToList();
+
+    if (allowed.Count == 0)
+    {
+        return 0;
+    }
+
+    var (where, parameters) = Where(definition, search);
+    await using var command = sqlTransaction.Connection.CreateCommand();
+    command.Transaction = sqlTransaction.Transaction;
+
+    var sets = new List<string>();
+    for (var index = 0; index < allowed.Count; index++)
+    {
+        sets.Add($"[{Esc(allowed[index].Key)}]=@u{index}");
+        command.Parameters.AddWithValue("@u" + index, allowed[index].Value ?? DBNull.Value);
+    }
+
+    sets.Add("[UpdatedAt]=@updated");
+    sets.Add("[UpdatedBy]=@updatedBy");
+    command.Parameters.AddWithValue("@updated", DateTime.UtcNow);
+    command.Parameters.AddWithValue("@updatedBy", (object?)_user.GetUserCode() ?? DBNull.Value);
+
+    if (definition.ConcurrencyEnabled)
+    {
+        sets.Add("[Version]=[Version]+1");
+    }
+
+    foreach (var parameter in parameters)
+    {
+        command.Parameters.Add(parameter);
+    }
+
+    command.CommandText =
+        $"UPDATE [{Esc(entity)}] SET {string.Join(",", sets)} {where}";
+
+    return await command.ExecuteNonQueryAsync(ct);
+}
+
+public async Task<long> Delete(
+    string entity,
+    SearchParam search,
+    IDBTransaction transaction,
+    CancellationToken ct = default)
+{
+    var definition = await Required(entity, ct);
+    var sqlTransaction = (SqlTx)transaction;
+    var (where, parameters) = Where(definition, search);
+
+    await using var command = sqlTransaction.Connection.CreateCommand();
+    command.Transaction = sqlTransaction.Transaction;
+
+    foreach (var parameter in parameters)
+    {
+        command.Parameters.Add(parameter);
+    }
+
+    if (definition.SoftDelete)
+    {
+        command.Parameters.AddWithValue("@deleted", DateTime.UtcNow);
+        command.Parameters.AddWithValue("@updatedBy", (object?)_user.GetUserCode() ?? DBNull.Value);
+        command.CommandText =
+            $"UPDATE [{Esc(entity)}] SET [DeletedAt]=@deleted,[UpdatedAt]=@deleted,[UpdatedBy]=@updatedBy" +
+            (definition.ConcurrencyEnabled ? ",[Version]=[Version]+1 " : " ") +
+            where;
+    }
+    else
+    {
+        command.CommandText = $"DELETE FROM [{Esc(entity)}] {where}";
+    }
+
+    return await command.ExecuteNonQueryAsync(ct);
+}
+
 private async Task EnsureMetadata(CancellationToken ct)
 {
     await using var c=CreateConnection();
@@ -239,23 +397,23 @@ private (string,List<SqlParameter>) Where(RuntimeEntityDefinition d,SearchParam 
     var p="@p"+ps.Count;
     switch(f.Operator)
     {
-        case SearchOperator.EQ:parts.Add($"[{Esc(n)}]={p}");
+        case SearchOperator.EQ:parts.Add($"{FieldExpression(d, n)}={p}");
         ps.Add(new(p,f.Value??DBNull.Value));
         break;
-        case SearchOperator.NEQ:parts.Add($"[{Esc(n)}]<>{p}");
+        case SearchOperator.NEQ:parts.Add($"{FieldExpression(d, n)}<>{p}");
         ps.Add(new(p,f.Value??DBNull.Value));
         break;
         case SearchOperator.GT:case SearchOperator.GTE:case SearchOperator.LT:case SearchOperator.LTE:var op=f.Operator switch{SearchOperator.GT=>">",SearchOperator.GTE=>">=",SearchOperator.LT=>"<",_=>"<="};
-        parts.Add($"[{Esc(n)}]{op}{p}");
+        parts.Add($"{FieldExpression(d, n)}{op}{p}");
         ps.Add(new(p,f.Value??DBNull.Value));
         break;
         case SearchOperator.Contains:case SearchOperator.StartsWith:case SearchOperator.EndsWith:var v=f.Operator==SearchOperator.Contains?$"%{f.Value}%":f.Operator==SearchOperator.StartsWith?$"{f.Value}%":$"%{f.Value}";
-        parts.Add($"[{Esc(n)}] LIKE {p}");
+        parts.Add($"{FieldExpression(d, n)} LIKE {p}");
         ps.Add(new(p,v));
         break;
-        case SearchOperator.IsNull:parts.Add($"[{Esc(n)}] IS NULL");
+        case SearchOperator.IsNull:parts.Add($"{FieldExpression(d, n)} IS NULL");
         break;
-        case SearchOperator.IsNotNull:parts.Add($"[{Esc(n)}] IS NOT NULL");
+        case SearchOperator.IsNotNull:parts.Add($"{FieldExpression(d, n)} IS NOT NULL");
         break;
         case SearchOperator.In:case SearchOperator.NotIn:{var vals=AsValues(f.Value);
         if(vals.Count==0){parts.Add(f.Operator==SearchOperator.In?"1=0":"1=1");
@@ -264,7 +422,7 @@ private (string,List<SqlParameter>) Where(RuntimeEntityDefinition d,SearchParam 
     foreach(var item in vals){var pn="@p"+ps.Count;
     names.Add(pn);
     ps.Add(new(pn,item??DBNull.Value));
-}parts.Add($"[{Esc(n)}] {(f.Operator==SearchOperator.In?"IN":"NOT IN")} ({string.Join(",",names)})");
+}parts.Add($"{FieldExpression(d, n)} {(f.Operator==SearchOperator.In?"IN":"NOT IN")} ({string.Join(",",names)})");
 break;
 }case SearchOperator.Between:case SearchOperator.NotBetween:{var vals=AsValues(f.Value);
 if(vals.Count!=2)throw new InvalidOperationException("Between requires exactly two values.");
@@ -272,7 +430,7 @@ var a="@p"+ps.Count;
 ps.Add(new(a,vals[0]??DBNull.Value));
 var z="@p"+ps.Count;
 ps.Add(new(z,vals[1]??DBNull.Value));
-parts.Add($"[{Esc(n)}] {(f.Operator==SearchOperator.NotBetween?"NOT ":"")}BETWEEN {a} AND {z}");
+parts.Add($"{FieldExpression(d, n)} {(f.Operator==SearchOperator.NotBetween?"NOT ":"")}BETWEEN {a} AND {z}");
 break;
 }default:throw new NotSupportedException($"Runtime SQL filter operator '{f.Operator}' is not supported yet.");
 }} var userClause=parts.Count==0?null:"("+string.Join(q.Condition==SearchCondition.Or?" OR ":" AND ",parts)+")";
@@ -286,7 +444,7 @@ if(userClause is not null)all.Add(userClause);
 all.AddRange(scopes);
 return (all.Count==0?"":"WHERE "+string.Join(" AND ",all),ps);
 }
-private string Order(RuntimeEntityDefinition d,SearchParam q)=>q.OrderBy.Count==0?"ORDER BY [Code] ASC": "ORDER BY "+string.Join(",",q.OrderBy.Select(x=>$"[{Esc(ResolveField(d,x.Field))}] {(x.Descending?"DESC":"ASC")}"));
+private string Order(RuntimeEntityDefinition d,SearchParam q)=>q.OrderBy.Count==0?"ORDER BY [Code] ASC": "ORDER BY "+string.Join(",",q.OrderBy.Select(x=>$"{FieldExpression(d,x.Field)} {(x.Descending?"DESC":"ASC")}"));
 private Dictionary<string,object?> PrepareInsert(RuntimeEntityDefinition d,IDictionary<string,object?> source)
 {
     var now=DateTime.UtcNow;
@@ -324,11 +482,58 @@ private static List<object?> AsValues(object? value)
 }return value is null?[]:[value];
 }
 private static bool IsUserField(RuntimeEntityDefinition d,string n)=>d.Fields.Any(x=>Eq(x.Name,n));
-private static string ResolveField(RuntimeEntityDefinition d,string n)
+private static string ResolveField(RuntimeEntityDefinition definition, string field)
 {
-    var system=new[]{"Code","Tenant","Version","CreatedAt","UpdatedAt","DeletedAt","CreatedBy","UpdatedBy"};
-    if(system.Any(x=>Eq(x,n))||IsUserField(d,n))return n;
-    throw new InvalidOperationException($"Runtime field '{n}' is not defined on '{d.Name}'.");
+    ArgumentException.ThrowIfNullOrWhiteSpace(field);
+
+    var system = new[]
+    {
+        "Code", "Tenant", "Version", "CreatedAt", "UpdatedAt",
+        "DeletedAt", "CreatedBy", "UpdatedBy"
+    };
+
+    if (system.Any(x => Eq(x, field)))
+    {
+        return field;
+    }
+
+    var separator = field.IndexOf('.');
+    var root = separator < 0 ? field : field[..separator];
+    var runtimeField = definition.Fields.FirstOrDefault(x => Eq(x.Name, root));
+
+    if (runtimeField is null)
+    {
+        throw new InvalidOperationException(
+            $"Runtime field '{root}' is not defined on '{definition.Name}'.");
+    }
+
+    if (separator < 0)
+    {
+        return runtimeField.Name;
+    }
+
+    if (runtimeField.DataType != RuntimeDataType.Json)
+    {
+        throw new InvalidOperationException(
+            $"Runtime field '{root}' on '{definition.Name}' is not a JSON field and cannot use a dotted path.");
+    }
+
+    return runtimeField.Name + field[separator..];
+}
+
+private static string FieldExpression(RuntimeEntityDefinition definition, string field)
+{
+    var resolved = ResolveField(definition, field);
+    var separator = resolved.IndexOf('.');
+
+    if (separator < 0)
+    {
+        return $"[{Esc(resolved)}]";
+    }
+
+    var root = resolved[..separator];
+    var path = resolved[(separator + 1)..].Replace("'", "''", StringComparison.Ordinal);
+    return $"JSON_VALUE([{Esc(root)}], '$.{path}')";
 }
 private static void ValidateDefinition(RuntimeEntityDefinition d)
 {
@@ -389,8 +594,30 @@ private static async Task Exec(SqlConnection c,SqlTransaction? tx,string sql,Can
 }
 private SqlConnection CreateConnection()
 {
-    var x=_options.Connection;
-    if(!string.IsNullOrWhiteSpace(x.ConnectionString))return new SqlConnection(x.ConnectionString);
+    var x = _options.Connection;
+    if (!string.IsNullOrWhiteSpace(x.ConnectionString))
+    {
+        var configured = new SqlConnectionStringBuilder(x.ConnectionString);
+        if (string.IsNullOrWhiteSpace(configured.InitialCatalog))
+        {
+            if (string.IsNullOrWhiteSpace(x.DatabaseName))
+            {
+                throw new InvalidOperationException(
+                    "SimpleORM SQL Server requires a DatabaseName. Set Connection.DatabaseName or include Initial Catalog/Database in Connection.ConnectionString.");
+            }
+
+            configured.InitialCatalog = x.DatabaseName;
+        }
+
+        return new SqlConnection(configured.ConnectionString);
+    }
+
+    if (string.IsNullOrWhiteSpace(x.DatabaseName))
+    {
+        throw new InvalidOperationException(
+            "SimpleORM SQL Server requires Connection.DatabaseName when ConnectionString is not supplied.");
+    }
+
     var b=new SqlConnectionStringBuilder{DataSource=x.Port>0?$"{x.Host},{x.Port}":x.Host,InitialCatalog=x.DatabaseName,TrustServerCertificate=true};
     if(string.IsNullOrWhiteSpace(x.Username))b.IntegratedSecurity=true;
     else

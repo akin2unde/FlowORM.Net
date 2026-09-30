@@ -19,9 +19,25 @@ public sealed class MongoRuntimeProvider : IRuntimeDatabaseProvider, IRuntimeSch
     {
         _tenant=tenant;
         _user=user;
-        var c=options.Connection;
-        var client=new MongoClient(string.IsNullOrWhiteSpace(c.ConnectionString)?$"mongodb://{c.Host}:{c.Port}":c.ConnectionString);
-        _db=client.GetDatabase(c.DatabaseName);
+        var connection = options.Connection;
+        var connectionString = string.IsNullOrWhiteSpace(connection.ConnectionString)
+            ? $"mongodb://{connection.Host}:{connection.Port}"
+            : connection.ConnectionString;
+
+        var databaseName = connection.DatabaseName;
+        if (string.IsNullOrWhiteSpace(databaseName) && !string.IsNullOrWhiteSpace(connection.ConnectionString))
+        {
+            databaseName = MongoUrl.Create(connection.ConnectionString).DatabaseName;
+        }
+
+        if (string.IsNullOrWhiteSpace(databaseName))
+        {
+            throw new InvalidOperationException(
+                "SimpleORM MongoDB requires a DatabaseName. Set Connection.DatabaseName or include the database name in Connection.ConnectionString.");
+        }
+
+        var client = new MongoClient(connectionString);
+        _db = client.GetDatabase(databaseName);
     }
     private IMongoCollection<BsonDocument> Meta=>_db.GetCollection<BsonDocument>(MetadataCollection);
     private IMongoCollection<BsonDocument> Col(string e)=>_db.GetCollection<BsonDocument>(e);
@@ -113,13 +129,42 @@ public async Task<object?> Sum(string entity,string field,SearchParam q,Cancella
     var x=await Col(entity).Aggregate().Match(Filter(d,q)).Group(new BsonDocument{{"_id",BsonNull.Value},{"value",new BsonDocument("$sum","$"+field)}}).FirstOrDefaultAsync(ct);
     return x is null?null:BsonTypeMapper.MapToDotNetValue(x["value"]);
 }
-public async Task<IReadOnlyList<dynamic>> Save(string entity,IReadOnlyList<IDictionary<string,object?>> data,IDBTransaction transaction,CancellationToken ct=default)
+public async Task<IReadOnlyList<dynamic>> Save(
+    string entity,
+    IReadOnlyList<IDictionary<string, object?>> data,
+    bool upsert,
+    IDBTransaction transaction,
+    CancellationToken ct = default)
 {
-    var d=await Required(entity,ct);
-    var session=((MongoTx)transaction).Session;
-    var docs=data.Select(x=>Prepare(d,x)).ToList();
-    await Col(entity).InsertManyAsync(session,docs,cancellationToken:ct);
-    return docs.Select(ToDynamic).ToList();
+    var definition = await Required(entity, ct);
+
+    if (upsert && definition.ConcurrencyEnabled)
+    {
+        throw new InvalidOperationException(
+            $"Runtime entity '{entity}' has optimistic concurrency enabled. " +
+            "Upsert uses last-write-wins semantics, so disable concurrency for this runtime entity before using upsert.");
+    }
+
+    var session = ((MongoTx)transaction).Session;
+    var documents = data.Select(item => Prepare(definition, item)).ToList();
+
+    if (!upsert)
+    {
+        await Col(entity).InsertManyAsync(session, documents, cancellationToken: ct);
+        return documents.Select(ToDynamic).ToList();
+    }
+
+    var writes = documents
+        .Select(document => (WriteModel<BsonDocument>)new ReplaceOneModel<BsonDocument>(
+            CodeScope(definition, document["Code"].AsString),
+            document)
+        {
+            IsUpsert = true
+        })
+        .ToList();
+
+    await Col(entity).BulkWriteAsync(session, writes, cancellationToken: ct);
+    return documents.Select(ToDynamic).ToList();
 }
 public async Task Update(string entity,string code,IDictionary<string,object?> data,IDBTransaction transaction,CancellationToken ct=default)
 {
@@ -139,6 +184,90 @@ public async Task Delete(string entity,string code,IDBTransaction transaction,Ca
     await Col(entity).UpdateOneAsync(session,CodeScope(d,code),u,cancellationToken:ct);
 }else await Col(entity).DeleteOneAsync(session,CodeScope(d,code),cancellationToken:ct);
 }
+public async Task<long> Update(
+    string entity,
+    SearchParam search,
+    IDictionary<string, object?> data,
+    IDBTransaction transaction,
+    CancellationToken ct = default)
+{
+    var definition = await Required(entity, ct);
+    var session = ((MongoTx)transaction).Session;
+    var updates = BuildUpdates(definition, data);
+
+    if (updates.Count == 0)
+    {
+        return 0;
+    }
+
+    updates.Add(Builders<BsonDocument>.Update.Set("UpdatedAt", DateTime.UtcNow));
+    updates.Add(Builders<BsonDocument>.Update.Set("UpdatedBy", BsonValue.Create(_user.GetUserCode())));
+
+    if (definition.ConcurrencyEnabled)
+    {
+        updates.Add(Builders<BsonDocument>.Update.Inc("Version", 1));
+    }
+
+    var result = await Col(entity).UpdateManyAsync(
+        session,
+        Filter(definition, search),
+        Builders<BsonDocument>.Update.Combine(updates),
+        cancellationToken: ct);
+
+    return result.ModifiedCount;
+}
+
+public async Task<long> Delete(
+    string entity,
+    SearchParam search,
+    IDBTransaction transaction,
+    CancellationToken ct = default)
+{
+    var definition = await Required(entity, ct);
+    var session = ((MongoTx)transaction).Session;
+    var filter = Filter(definition, search);
+
+    if (!definition.SoftDelete)
+    {
+        var deleted = await Col(entity).DeleteManyAsync(session, filter, cancellationToken: ct);
+        return deleted.DeletedCount;
+    }
+
+    var update = Builders<BsonDocument>.Update
+        .Set("DeletedAt", DateTime.UtcNow)
+        .Set("UpdatedAt", DateTime.UtcNow)
+        .Set("UpdatedBy", BsonValue.Create(_user.GetUserCode()));
+
+    if (definition.ConcurrencyEnabled)
+    {
+        update = update.Inc("Version", 1);
+    }
+
+    var result = await Col(entity).UpdateManyAsync(session, filter, update, cancellationToken: ct);
+    return result.ModifiedCount;
+}
+
+private List<UpdateDefinition<BsonDocument>> BuildUpdates(
+    RuntimeEntityDefinition definition,
+    IDictionary<string, object?> data)
+{
+    var updates = new List<UpdateDefinition<BsonDocument>>();
+
+    foreach (var item in data)
+    {
+        var field = ResolveField(definition, item.Key);
+
+        if (IsSystemField(field))
+        {
+            continue;
+        }
+
+        updates.Add(Builders<BsonDocument>.Update.Set(field, BsonValue.Create(item.Value)));
+    }
+
+    return updates;
+}
+
 private FilterDefinition<BsonDocument> Filter(RuntimeEntityDefinition d,SearchParam q)
 {
     var b=Builders<BsonDocument>.Filter;
@@ -205,11 +334,49 @@ private async Task CreateCodeIndex(RuntimeEntityDefinition d,CancellationToken c
 }
 private async Task Store(RuntimeEntityDefinition d,CancellationToken ct)=>await Meta.ReplaceOneAsync(Builders<BsonDocument>.Filter.Eq("Name",d.Name),new BsonDocument{{"Name",d.Name},{"Definition",JsonSerializer.Serialize(d)},{"UpdatedAt",DateTime.UtcNow}},new ReplaceOptions{IsUpsert=true},ct);
 private async Task<RuntimeEntityDefinition> Required(string e,CancellationToken ct)=>await GetEntity(e,ct)??throw new InvalidOperationException($"Runtime entity '{e}' does not exist.");
-private static string ResolveField(RuntimeEntityDefinition d,string n)
+private static string ResolveField(RuntimeEntityDefinition definition, string field)
 {
-    var sys=new[]{"Code","Tenant","Version","CreatedAt","UpdatedAt","DeletedAt","CreatedBy","UpdatedBy"};
-    if(sys.Any(x=>Eq(x,n))||d.Fields.Any(x=>Eq(x.Name,n)))return n;
-    throw new InvalidOperationException($"Runtime field '{n}' is not defined on '{d.Name}'.");
+    ArgumentException.ThrowIfNullOrWhiteSpace(field);
+
+    if (IsSystemField(field))
+    {
+        return field;
+    }
+
+    var separator = field.IndexOf('.');
+    var root = separator < 0 ? field : field[..separator];
+    var runtimeField = definition.Fields.FirstOrDefault(x => Eq(x.Name, root));
+
+    if (runtimeField is null)
+    {
+        throw new InvalidOperationException(
+            $"Runtime field '{root}' is not defined on '{definition.Name}'.");
+    }
+
+    if (separator < 0)
+    {
+        return runtimeField.Name;
+    }
+
+    if (runtimeField.DataType != RuntimeDataType.Json)
+    {
+        throw new InvalidOperationException(
+            $"Runtime field '{root}' on '{definition.Name}' is not a JSON field and cannot use a dotted path.");
+    }
+
+    return runtimeField.Name + field[separator..];
+}
+
+private static bool IsSystemField(string field)
+{
+    var root = field.Split('.', 2)[0];
+    var systemFields = new[]
+    {
+        "Code", "Tenant", "Version", "CreatedAt", "UpdatedAt",
+        "DeletedAt", "CreatedBy", "UpdatedBy"
+    };
+
+    return systemFields.Any(x => Eq(x, root));
 }
 private static void Validate(RuntimeEntityDefinition d)
 {

@@ -97,3 +97,7 @@
 - Extended expression filtering to nested members and dictionary indexers such as `x => x.Attributes["Color"] == "Black"`.
 - Documented `DBModel.Upsert`, including its MongoDB/concurrency semantics.
 - Documented full `Connection.ConnectionString` configuration and fixed SQL Server runtime connections to honor it, matching MongoDB and SQL schema synchronization.
+- Added runtime entity upsert support for SQL Server and MongoDB without changing `IDataRepository`; runtime upsert follows the same last-write-wins/concurrency restriction as typed upsert.
+- Added runtime JSON dotted-path resolution such as `Details.Lines.Product`; MongoDB uses native dotted paths and SQL Server uses JSON scalar path expressions where applicable.
+- Added server-side runtime bulk `Update(entity, SearchParam, values)` and `Delete(entity, SearchParam)` operations; empty-filter bulk mutations are rejected to prevent accidental whole-entity changes.
+- Added early database-name validation. MongoDB can resolve the database from the connection string; SQL Server validates `Initial Catalog`/`Database` when a full connection string is used.

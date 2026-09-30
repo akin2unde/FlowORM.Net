@@ -51,19 +51,39 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
         _t = t;
 
         var c = o.Connection;
+        var databaseName = c.DatabaseName;
 
         if (string.IsNullOrWhiteSpace(c.ConnectionString))
         {
-            var cs = string.IsNullOrWhiteSpace(c.Username) ? $"mongodb://{c.Host}:{c.Port}" : $"mongodb://{Uri.EscapeDataString(c.Username)}:{Uri.EscapeDataString(c.Password ?? "")}@{c.Host}:{c.Port}/{c.DatabaseName}";
+            if (string.IsNullOrWhiteSpace(databaseName))
+            {
+                throw new InvalidOperationException(
+                    "SimpleORM MongoDB requires Connection.DatabaseName when ConnectionString is not supplied.");
+            }
+
+            var cs = string.IsNullOrWhiteSpace(c.Username)
+                ? $"mongodb://{c.Host}:{c.Port}"
+                : $"mongodb://{Uri.EscapeDataString(c.Username)}:{Uri.EscapeDataString(c.Password ?? "")}@{c.Host}:{c.Port}/{databaseName}";
+
             cs += "?replicaSet=rs0&directConnection=true";
             _client = new MongoClient(cs);
         }
         else
         {
-            if (string.IsNullOrWhiteSpace(c.DatabaseName)) throw new Exception("Database name must be set");
+            databaseName = string.IsNullOrWhiteSpace(databaseName)
+                ? MongoUrl.Create(c.ConnectionString).DatabaseName
+                : databaseName;
+
+            if (string.IsNullOrWhiteSpace(databaseName))
+            {
+                throw new InvalidOperationException(
+                    "SimpleORM MongoDB requires a DatabaseName. Set Connection.DatabaseName or include the database name in Connection.ConnectionString.");
+            }
+
             _client = new MongoClient(c.ConnectionString);
         }
-        _db = _client.GetDatabase(c.DatabaseName);
+
+        _db = _client.GetDatabase(databaseName);
     }
 
     /// <inheritdoc />

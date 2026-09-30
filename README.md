@@ -1219,3 +1219,85 @@ await runtimeRepository.Delete("CustomProduct", code);
 ```
 
 `IDataRepository` remains unchanged; use it for compile-time `DBModel` types and use `IRuntimeDataRepository` only for runtime-defined entities.
+
+## Runtime Upsert
+
+Runtime entities support the same explicit upsert intent as typed models without storing `Upsert` as business data:
+
+```csharp
+await runtimeRepository.Save(
+    "Order",
+    order,
+    cancellationToken,
+    upsert: true);
+```
+
+Batch upsert is also supported:
+
+```csharp
+await runtimeRepository.Save(
+    "Order",
+    orders,
+    cancellationToken,
+    batch: 500,
+    upsert: true);
+```
+
+Upsert uses last-write-wins semantics. A runtime entity with optimistic concurrency enabled rejects upsert; set `ConcurrencyEnabled = false` on an entity only when that behavior is intentional.
+
+## Runtime JSON Dotted Paths
+
+A field declared as `RuntimeDataType.Json` can be queried through a dotted path:
+
+```csharp
+var search = new SearchParam
+{
+    Filters =
+    [
+        new SearchFilter
+        {
+            Field = "Details.Lines.Product",
+            Operator = SearchOperator.EQ,
+            Value = "PRO-001"
+        }
+    ]
+};
+```
+
+SimpleORM validates `Details` as a defined JSON runtime field and passes the remaining path to the provider. MongoDB supports native dotted document/array paths. SQL Server translates scalar JSON paths through its JSON functions; array-element matching that requires `OPENJSON` remains provider-specific.
+
+## Runtime Bulk Update and Delete
+
+Update all runtime records matching a `SearchParam` in one provider-side operation:
+
+```csharp
+var affected = await runtimeRepository.Update(
+    "PrismRecord_SalesByCustomer",
+    search,
+    new Dictionary<string, object?>
+    {
+        ["CustomerName"] = "Ada Okafor"
+    },
+    cancellationToken);
+```
+
+Delete all matching records:
+
+```csharp
+var affected = await runtimeRepository.Delete(
+    "PrismRecord_SalesByCustomer",
+    search,
+    cancellationToken);
+```
+
+MongoDB uses `UpdateMany` / `DeleteMany` (or a bulk soft-delete update). SQL Server uses one set-based `UPDATE` / `DELETE`. For safety, bulk update and delete reject a `SearchParam` with no filters.
+
+## Database Name Validation
+
+SimpleORM validates the target database before opening provider connections.
+
+- With individual connection settings, set `Connection.DatabaseName`.
+- With a MongoDB connection string, either set `Connection.DatabaseName` or include the database in the connection string.
+- With a SQL Server connection string, include `Initial Catalog` / `Database`.
+
+A missing database name now produces a clear `InvalidOperationException` instead of failing later during provider initialization or the first database operation.

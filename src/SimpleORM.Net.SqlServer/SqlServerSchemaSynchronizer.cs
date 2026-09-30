@@ -998,7 +998,28 @@ public sealed class SqlServerSchemaSynchronizer : IDBSchemaSynchronizer
     {
 
         var connection = _options.Connection;
-        if (!string.IsNullOrWhiteSpace(connection.ConnectionString)) return new SqlConnection(connection.ConnectionString);
+        if (!string.IsNullOrWhiteSpace(connection.ConnectionString))
+        {
+            var configured = new SqlConnectionStringBuilder(connection.ConnectionString);
+            if (string.IsNullOrWhiteSpace(configured.InitialCatalog))
+            {
+                if (string.IsNullOrWhiteSpace(connection.DatabaseName))
+                {
+                    throw new InvalidOperationException(
+                        "SimpleORM SQL Server requires a DatabaseName. Set Connection.DatabaseName or include Initial Catalog/Database in Connection.ConnectionString.");
+                }
+
+                configured.InitialCatalog = connection.DatabaseName;
+            }
+
+            return new SqlConnection(configured.ConnectionString);
+        }
+
+        if (string.IsNullOrWhiteSpace(connection.DatabaseName))
+        {
+            throw new InvalidOperationException(
+                "SimpleORM SQL Server requires Connection.DatabaseName when ConnectionString is not supplied.");
+        }
         var builder = new SqlConnectionStringBuilder
         {
             DataSource = connection.Port > 0
