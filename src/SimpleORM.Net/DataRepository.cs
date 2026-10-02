@@ -282,7 +282,8 @@ public sealed class DataRepository(
             {
                 if (string.IsNullOrWhiteSpace(item.Code)) item.Code = item.GenerateCode(modelMetadata.CodeLength, options.CodeGeneration.Separator);
                 if (item.Version <= 0) item.Version = 1;
-                if (item.CreatedAt == default) item.CreatedAt = now;
+                item.CreatedAt = now;
+                item.UpdatedAt = now;
                 item.CreatedBy ??= userProvider.GetUserCode();
             }
             else
