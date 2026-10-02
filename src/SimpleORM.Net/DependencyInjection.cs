@@ -28,9 +28,9 @@ public static class DependencyInjection
         var options = new SimpleOrmOptions();
         configure(options);
 
-        if (options.Connection.Port <= 0)
+        if (options.Connection.Port <= 0 && string.IsNullOrEmpty(options.Connection.ConnectionString))
         {
-            throw new InvalidOperationException("Connection.Port must be greater than zero.");
+            throw new InvalidOperationException("Connection.Port must be greater than zero Connection.ConnectionString is not supplied.");
         }
 
         if (string.IsNullOrWhiteSpace(options.Connection.ConnectionString) &&
