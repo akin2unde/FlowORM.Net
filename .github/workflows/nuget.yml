@@ -23,23 +23,23 @@ jobs:
           dotnet-version: "10.0.x"
 
       - name: Restore
-        run: dotnet restore SimpleORM.Net.slnx
+        run: dotnet restore FlowORM.Net.slnx
 
       - name: Build
         run: >
-          dotnet build SimpleORM.Net.slnx
+          dotnet build FlowORM.Net.slnx
           --configuration Release
           --no-restore
 
       - name: Test
         run: >
-          dotnet test SimpleORM.Net.slnx
+          dotnet test FlowORM.Net.slnx
           --configuration Release
           --no-build
 
       - name: Pack
         run: >
-          dotnet pack SimpleORM.Net.slnx
+          dotnet pack FlowORM.Net.slnx
           --configuration Release
           --no-build
           --output ./artifacts
