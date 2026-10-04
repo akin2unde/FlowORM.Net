@@ -8,6 +8,10 @@ namespace SimpleORM.Net.Abstractions;
 public interface IRuntimeDataRepository
 {
     Task<PagedResult<dynamic>> Select(string entity, SearchParam? search = null, int skip = 0, int limit = 100, CancellationToken cancellationToken = default, int? batch = null);
+    /// <summary>Selects runtime records with optional total-count calculation. False leaves the total unknown.</summary>
+    Task<PagedResult<dynamic>> Select(string entity, SearchParam? search, bool includeTotal, int skip = 0, int limit = 100, CancellationToken cancellationToken = default, int? batch = null);
+    /// <summary>Selects runtime records without query filters and with optional total-count calculation.</summary>
+    Task<PagedResult<dynamic>> Select(string entity, bool includeTotal, int skip = 0, int limit = 100, CancellationToken cancellationToken = default, int? batch = null);
     Task<dynamic?> SelectSingle(string entity, SearchParam? search = null, CancellationToken cancellationToken = default);
     Task<dynamic> Save(string entity, IDictionary<string, object?> data, CancellationToken cancellationToken = default, bool upsert = false);
     Task<List<dynamic>> Save(string entity, IEnumerable<IDictionary<string, object?>> data, CancellationToken cancellationToken = default, int? batch = null, bool upsert = false);

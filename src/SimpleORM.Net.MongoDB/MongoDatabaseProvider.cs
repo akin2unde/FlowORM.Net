@@ -1,3 +1,4 @@
+using SimpleORM.Net.Services;
 using System.Dynamic;
 
 using System.Text.Json;
@@ -44,13 +45,13 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
         SimpleOrmOptions o,
         IDBMetadataProvider m,
         ITenantProvider t,
-        IMongoClient client)
+        IMongoClient client, SimpleOrmExecutionContext? executionContext = null)
     {
         MongoDBConventionRegistrar.RegisterPersistence(o.EnumStorage);
 
         _o = o;
         _m = m;
-        _t = t;
+        _t = executionContext?.Wrap(t) ?? t;
         _client = client;
 
         var databaseName = MongoConnectionResolver.RequireDatabaseName(o);

@@ -66,6 +66,8 @@ public static class DependencyInjection
         services.AddScoped<IExtensionService, DefaultExtensionService>();
         services.AddScoped<IAuditService, DefaultAuditService>();
         services.AddScoped<IDataRepository, DataRepository>();
+        services.AddScoped<SimpleOrmExecutionContext>();
+        services.AddSingleton<ISimpleOrmExecutor, SimpleOrmExecutor>();
         services.AddScoped<IRuntimeDataRepository, RuntimeDataRepository>();
         services.AddScoped<ISchemaManager, SchemaManager>();
 

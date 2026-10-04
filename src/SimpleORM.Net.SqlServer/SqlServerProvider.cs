@@ -1,3 +1,4 @@
+using SimpleORM.Net.Services;
 using System.Data;
 using System.Collections;
 using System.Dynamic;
@@ -29,14 +30,15 @@ public sealed class SqlServerProvider : IDatabaseProvider, IDBQuery
     /// <param name="options">SimpleORM configuration.</param>
     /// <param name="metadata">Cached model metadata provider.</param>
     /// <param name="tenant">Current tenant resolver.</param>
+    /// <param name="executionContext">Optional operation-scoped tenant override.</param>
     public SqlServerProvider(
         SimpleOrmOptions options,
         IDBMetadataProvider metadata,
-        ITenantProvider tenant)
+        ITenantProvider tenant, SimpleOrmExecutionContext? executionContext = null)
     {
         _options = options;
         _metadata = metadata;
-        _tenant = tenant;
+        _tenant = executionContext?.Wrap(tenant) ?? tenant;
     }
 
     /// <inheritdoc />

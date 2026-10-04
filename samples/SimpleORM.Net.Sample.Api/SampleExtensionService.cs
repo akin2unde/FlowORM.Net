@@ -53,18 +53,19 @@ public sealed class SampleExtensionService : IExtensionService
     /// <param name="options">
     /// SimpleORM configuration.
     /// </param>
+    /// <param name="executionContext">Optional operation-scoped tenant override.</param>
     public SampleExtensionService(
         IDatabaseProvider provider,
         IDBMetadataProvider metadata,
         ICodeGenerator codeGenerator,
         ITenantProvider tenantProvider,
         IUserProvider userProvider,
-        SimpleOrmOptions options)
+        SimpleOrmOptions options, SimpleOrmExecutionContext? executionContext = null)
     {
         _provider = provider;
         _metadata = metadata;
         _codeGenerator = codeGenerator;
-        _tenantProvider = tenantProvider;
+        _tenantProvider = executionContext?.Wrap(tenantProvider) ?? tenantProvider;
         _userProvider = userProvider;
         _options = options;
     }

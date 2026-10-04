@@ -1,3 +1,4 @@
+using SimpleORM.Net.Services;
 #pragma warning disable CS1591
 using System.Dynamic;
 using System.Globalization;
@@ -15,10 +16,10 @@ public sealed class SqlServerRuntimeProvider : IRuntimeDatabaseProvider, IRuntim
     private readonly SimpleOrmOptions _options;
     private readonly ITenantProvider _tenant;
     private readonly IUserProvider _user;
-    public SqlServerRuntimeProvider(SimpleOrmOptions options, ITenantProvider tenant, IUserProvider user)
+    public SqlServerRuntimeProvider(SimpleOrmOptions options, ITenantProvider tenant, IUserProvider user, SimpleOrmExecutionContext? executionContext = null)
     {
         _options = options;
-        _tenant = tenant;
+        _tenant = executionContext?.Wrap(tenant) ?? tenant;
         _user = user;
     }
     public async Task CreateEntity(RuntimeEntityDefinition d, CancellationToken ct = default)

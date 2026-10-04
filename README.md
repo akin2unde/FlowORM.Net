@@ -1301,3 +1301,151 @@ SimpleORM validates the target database before opening provider connections.
 - With a SQL Server connection string, include `Initial Catalog` / `Database`.
 
 A missing database name now produces a clear `InvalidOperationException` instead of failing later during provider initialization or the first database operation.
+
+# Select with Optional Total Calculation
+
+Existing `Select` calls still calculate the total. Use this for UI pagination such as “Page 1 of 20”:
+
+```csharp
+var result = await repository.Select<Customer>(search, limit: 50, cancellationToken: ct);
+var rows = result.Data;
+var total = result.TotalRecords; // Calculated; TotalCalculated is true.
+```
+
+The overload with `includeTotal: false` avoids the matching-record Count query:
+
+```csharp
+var result = await repository.Select<Customer>(
+    search,
+    includeTotal: false,
+    limit: 500,
+    cancellationToken: ct);
+
+var rows = result.Data;
+// result.TotalCalculated == false
+// result.TotalRecords == 0 is a placeholder, not proof there are zero matches.
+```
+
+Use `TotalCalculated` before displaying or otherwise interpreting `TotalRecords`. `Data.Count` is the number returned in this page, not the number of matching records. Reading only `.Data` from a counted Select does not avoid Count: it has already run.
+
+| Use case | Calculate total? |
+|---|---|
+| UI page numbers and total records | Yes; normal Select |
+| Exact progress percentage | Calculate once where practical, then read later pages without counting |
+| Worker processing successive batches until no rows remain | No |
+| Export processing successive batches | No, unless a displayed total is needed |
+| Prism pre-compile rebuild | No count per page; mirror summary can provide estimated progress |
+
+All existing Select signatures remain. New overloads cover SearchParam, expressions, expressions plus SearchParam, dynamic projections and runtime entities. There is no separate SelectData API:
+
+```csharp
+await repository.Select<Customer>(includeTotal: false, limit: 500, cancellationToken: ct);
+await repository.Select<Customer>(c => c.Name == "Ada", includeTotal: false, cancellationToken: ct);
+await repository.Select<Customer>(c => c.Name == "Ada", search, includeTotal: false, cancellationToken: ct);
+await repository.SelectDynamic<Customer>(
+    new SearchParam { Fields = [nameof(Customer.Name)] }, includeTotal: false, cancellationToken: ct);
+await runtimeRepository.Select("Customer", search, includeTotal: false, limit: 500, cancellationToken: ct);
+```
+
+Typed no-count reads still normalize search values, enforce provider tenant/soft-delete rules, load extensions and apply return defaults. Logical limits and the existing physical batch cap of 500 remain. `limit: 0` still fetches all remaining rows: no-count reads stop at an empty/short batch. Fetch-all returns a materialized collection; physical batching does not bound the memory of the complete result. Use positive limits for large workers and exports.
+
+For a cursor-based worker, use the same filter and ordering on each page. Here the cursor is the last Code read, not a last-updated marker:
+
+```csharp
+string? after = null;
+while (true)
+{
+    var query = new SearchParam
+    {
+        OrderBy = [new SearchOrder { Field = nameof(Customer.Code) }]
+    };
+    if (after is not null)
+        query.Filters.Add(new SearchFilter
+        {
+            Field = nameof(Customer.Code), Operator = SearchOperator.GT, Value = after
+        });
+
+    var page = await repository.Select<Customer>(query, includeTotal: false,
+        limit: 500, cancellationToken: ct);
+    if (page.Data.Count == 0) break;
+
+    await Process(page.Data, ct); // Your application processing method.
+    after = page.Data[^1].Code;
+}
+```
+
+A cursor scan is not a change feed or a point-in-time snapshot. Concurrent inserts/updates behind the cursor need a later reconciliation run or durable pending work. For progress, calculate a count once or use an appropriate summary rather than counting the remaining records on every page.
+
+# Scoped Run and Transaction
+
+`AddSimpleOrm` now registers `ISimpleOrmExecutor` automatically. Inject it into a worker or service:
+
+```csharp
+using SimpleORM.Net.Abstractions;
+using SimpleORM.Net.Models;
+using SimpleORM.Net.Query;
+
+public sealed class CustomerWorker(ISimpleOrmExecutor orm)
+{
+    public Task<PagedResult<Customer>> ReadPage(SearchParam search, string tenant, CancellationToken ct) =>
+        orm.Run((repo, token) => repo.Select<Customer>(search,
+            includeTotal: false, limit: 500, cancellationToken: token),
+            tenant: tenant, cancellationToken: ct);
+}
+```
+
+Run creates one DI scope, sets an optional tenant override, resolves IDataRepository, awaits the callback and asynchronously disposes the scope. It uses the registered service container; it does not create another database or container per call. MongoDB typed/runtime providers continue sharing the registered singleton MongoClient and its connection pools. SQL Server continues using its provider connection lifecycle and SQL connection pooling.
+
+The executor is singleton-safe; each call owns its repository and execution context. Multiple operations inside one callback use the same scoped repository:
+
+```csharp
+var customer = await orm.Run(
+    (repo, token) => repo.GetByCode<Customer>("CUS-001", token),
+    tenant: "Tenant1", cancellationToken: ct);
+```
+
+Run does not start an outer transaction. Individual repository writes keep their existing transaction behavior. Use Transaction when several writes must commit together:
+
+```csharp
+await orm.Transaction(async (repo, token) =>
+{
+    await repo.Save(customer, token);
+    await repo.Save(inventory, token); // A different model type, same transaction.
+}, tenant: "Tenant1", cancellationToken: ct);
+```
+
+Transaction resolves the repository and IDBTransactionManager from the same scope. Existing nested repository saves reuse the active transaction. The callback does not need one model type or return type to group writes. Result-returning overloads are available for both Run and Transaction. Exceptions propagate; scope disposal happens on success, failure and cancellation. Rollback uses a non-cancelled token so cancellation does not prevent cleanup.
+
+| Situation | Recommended access |
+|---|---|
+| Normal API request service | Inject IDataRepository; keep the existing request scope |
+| Hosted worker/scheduled process | Inject ISimpleOrmExecutor; Run creates the operation scope |
+| Several atomic writes | Transaction, or the existing scoped IDBTransactionManager |
+| Reading the next batch | Run with Select(includeTotal: false) |
+
+Tenant and lifetime rules:
+
+- An explicit non-empty tenant overrides the tenant only for that operation. Concurrent calls have independent scoped contexts.
+- Omitted/null tenant means use the existing JWT/custom ITenantProvider. The executor does not replace that provider or change the HTTP user's identity.
+- A background process without an ambient identity must supply a tenant when tenant-scoped multi-tenancy requires it. Global-model behavior remains unchanged.
+- Keep your existing user provider for audit identity. This API overrides the tenant, not the user.
+- Calls use the ORM registration in their own service container. This does not add named-database registration; Prism can resolve its executor from its existing private container.
+- Nested executor calls create new scopes and independent transactions. Use the callback's repository for all work that must participate in the same transaction, and await that work sequentially.
+- Return materialized results rather than repositories or deferred operations whose scope has already ended.
+
+`SimpleOrmExecutionContext` is scoped. The built-in repository, extension service and both typed/runtime providers wrap the configured tenant provider through this context. Custom providers/services that resolve tenants directly can participate without changing ITenantProvider:
+
+```csharp
+// In a custom provider/service constructor:
+_operationTenant = executionContext.Wrap(configuredTenantProvider);
+// Later:
+var tenant = _operationTenant.GetTenant();
+```
+
+The sample's custom extension service is updated accordingly. See `ScopedExecutionExamples.cs` for registered examples of paged reads and mixed-model transactions; these examples do not run automatically at startup.
+
+One existing transaction limitation remains: repository Save updates supplied model state/version before an outer transaction commits. If that outer transaction later rolls back, those in-memory objects are not automatically restored. Reload/reconstruct them or explicitly restore their persistence state before retrying. Database writes still roll back atomically.
+
+## Validation of this update
+
+Added tests for default counted reads, no-count physical batching/fetch-all, expressions and projections, runtime reads, tenant isolation/fallback, asynchronous scope disposal, shared transactions, rollback and cancellation. The editing environment lacks the .NET SDK and database servers: executable tests and provider integration must run in CI. Local source syntax, XML, JSON and archive checks do not substitute for compilation or database integration.

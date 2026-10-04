@@ -16,7 +16,7 @@ public sealed class PagedResult<T>
     }
     = Array.Empty<T>();
 
-    /// <summary>Total matching records before skip/limit.</summary>
+    /// <summary>Total matching records before skip/limit. Interpret only when TotalCalculated is true.</summary>
     public long TotalRecords
     {
         get;
@@ -24,6 +24,9 @@ public sealed class PagedResult<T>
         init;
 
     }
+
+    /// <summary>Whether TotalRecords was calculated. False means the total is unknown; its numeric value is a placeholder.</summary>
+    public bool TotalCalculated { get; init; } = true;
 
     /// <summary>Records skipped.</summary>
     public int Skipped

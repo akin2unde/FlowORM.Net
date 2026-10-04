@@ -1,3 +1,4 @@
+using SimpleORM.Net.Services;
 #pragma warning disable CS1591
 using System.Dynamic;
 using System.Text.Json;
@@ -19,9 +20,9 @@ public sealed class MongoRuntimeProvider : IRuntimeDatabaseProvider, IRuntimeSch
         SimpleOrmOptions options,
         ITenantProvider tenant,
         IUserProvider user,
-        IMongoClient client)
+        IMongoClient client, SimpleOrmExecutionContext? executionContext = null)
     {
-        _tenant = tenant;
+        _tenant = executionContext?.Wrap(tenant) ?? tenant;
         _user = user;
 
         var databaseName = MongoConnectionResolver.RequireDatabaseName(options);

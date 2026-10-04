@@ -11,32 +11,46 @@ public sealed class RuntimeDataRepository(
     IRuntimeDatabaseProvider provider,
     IDBTransactionManager transactions) : IRuntimeDataRepository
 {
-    public async Task<PagedResult<dynamic>> Select(
-        string entity,
-        SearchParam? search = null,
-        int skip = 0,
-        int limit = 100,
-        CancellationToken cancellationToken = default,
-        int? batch = null)
+    public Task<PagedResult<dynamic>> Select(string entity, SearchParam? search = null, int skip = 0, int limit = 100,
+        CancellationToken cancellationToken = default, int? batch = null) =>
+        Select(entity, search, true, skip, limit, cancellationToken, batch);
+
+    public Task<PagedResult<dynamic>> Select(string entity, bool includeTotal, int skip = 0, int limit = 100,
+        CancellationToken cancellationToken = default, int? batch = null) =>
+        Select(entity, null, includeTotal, skip, limit, cancellationToken, batch);
+
+    public async Task<PagedResult<dynamic>> Select(string entity, SearchParam? search, bool includeTotal,
+        int skip = 0, int limit = 100, CancellationToken cancellationToken = default, int? batch = null)
     {
         ValidateEntity(entity);
-
-        if (skip < 0 || limit < 0)
-        {
-            throw new ArgumentOutOfRangeException();
-        }
-
+        if (skip < 0 || limit < 0) throw new ArgumentOutOfRangeException();
+        cancellationToken.ThrowIfCancellationRequested();
         var query = search?.Clone() ?? new SearchParam();
-        var total = await provider.Count(entity, query, cancellationToken);
-        var rows = await provider.Select(entity, query, skip, limit, cancellationToken);
-
-        return new PagedResult<dynamic>
+        var total = includeTotal ? await provider.Count(entity, query, cancellationToken) : 0;
+        // Preserve the existing counted runtime read path. No-count reads use finite physical batches.
+        if (includeTotal)
         {
-            Data = rows.ToList(),
-            TotalRecords = total,
-            Skipped = skip,
-            Limit = limit
-        };
+            var selected = await provider.Select(entity, query, skip, limit, cancellationToken);
+            return new PagedResult<dynamic> { Data = selected.ToList(), TotalRecords = total,
+                TotalCalculated = true, Skipped = skip, Limit = limit };
+        }
+        var rows = new List<dynamic>();
+        var size = BatchResolver.Resolve(batch, 100);
+        var position = skip;
+        long remaining = limit == 0 ? long.MaxValue : limit;
+        while (remaining > 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var take = (int)Math.Min(size, remaining);
+            var page = await provider.Select(entity, query, position, take, cancellationToken);
+            if (page.Count == 0) break;
+            rows.AddRange(page);
+            position = checked(position + page.Count);
+            remaining -= page.Count;
+            if (page.Count < take) break;
+        }
+        return new PagedResult<dynamic> { Data = rows, TotalRecords = 0, TotalCalculated = false,
+            Skipped = skip, Limit = limit };
     }
 
     public Task<dynamic?> SelectSingle(

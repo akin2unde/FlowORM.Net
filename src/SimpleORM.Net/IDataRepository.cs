@@ -107,6 +107,66 @@ public interface IDataRepository
         int? batch = null)
         where T : DBModel;
 
+    /// <summary>Selects records with optional total-count calculation.</summary>
+    /// <typeparam name="T">Model type.</typeparam>
+    /// <param name="search">Optional query filters and ordering. Dynamic projections require selected fields.</param>
+    /// <param name="includeTotal">Whether to count matching records. False avoids Count; inspect TotalCalculated before using TotalRecords.</param>
+    /// <param name="skip">Matching records to skip.</param>
+    /// <param name="limit">Logical limit; zero reads all remaining rows in bounded physical batches.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <param name="batch">Physical batch size, capped by the ORM maximum.</param>
+    /// <returns>Selected data and a flag indicating whether the total was calculated.</returns>
+    Task<PagedResult<T>> Select<T>(SearchParam? search, bool includeTotal, int skip = 0, int limit = 100,
+        CancellationToken cancellationToken = default, int? batch = null) where T : DBModel;
+
+    /// <summary>Selects records with optional total-count calculation.</summary>
+    /// <typeparam name="T">Model type.</typeparam>
+    /// <param name="includeTotal">Whether to count matching records. False avoids Count; inspect TotalCalculated before using TotalRecords.</param>
+    /// <param name="skip">Matching records to skip.</param>
+    /// <param name="limit">Logical limit; zero reads all remaining rows in bounded physical batches.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <param name="batch">Physical batch size, capped by the ORM maximum.</param>
+    /// <returns>Selected data and a flag indicating whether the total was calculated.</returns>
+    Task<PagedResult<T>> Select<T>(bool includeTotal, int skip = 0, int limit = 100,
+        CancellationToken cancellationToken = default, int? batch = null) where T : DBModel;
+
+    /// <summary>Selects records with optional total-count calculation.</summary>
+    /// <typeparam name="T">Model type.</typeparam>
+    /// <param name="expression">Strongly typed filter.</param>
+    /// <param name="includeTotal">Whether to count matching records. False avoids Count; inspect TotalCalculated before using TotalRecords.</param>
+    /// <param name="skip">Matching records to skip.</param>
+    /// <param name="limit">Logical limit; zero reads all remaining rows in bounded physical batches.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <param name="batch">Physical batch size, capped by the ORM maximum.</param>
+    /// <returns>Selected data and a flag indicating whether the total was calculated.</returns>
+    Task<PagedResult<T>> Select<T>(Expression<Func<T, bool>> expression, bool includeTotal, int skip = 0, int limit = 100,
+        CancellationToken cancellationToken = default, int? batch = null) where T : DBModel;
+
+    /// <summary>Selects records with optional total-count calculation.</summary>
+    /// <typeparam name="T">Model type.</typeparam>
+    /// <param name="expression">Strongly typed filter.</param>
+    /// <param name="search">Optional query filters and ordering. Dynamic projections require selected fields.</param>
+    /// <param name="includeTotal">Whether to count matching records. False avoids Count; inspect TotalCalculated before using TotalRecords.</param>
+    /// <param name="skip">Matching records to skip.</param>
+    /// <param name="limit">Logical limit; zero reads all remaining rows in bounded physical batches.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <param name="batch">Physical batch size, capped by the ORM maximum.</param>
+    /// <returns>Selected data and a flag indicating whether the total was calculated.</returns>
+    Task<PagedResult<T>> Select<T>(Expression<Func<T, bool>> expression, SearchParam? search, bool includeTotal, int skip = 0, int limit = 100,
+        CancellationToken cancellationToken = default, int? batch = null) where T : DBModel;
+
+    /// <summary>Selects records with optional total-count calculation.</summary>
+    /// <typeparam name="T">Model type.</typeparam>
+    /// <param name="search">Optional query filters and ordering. Dynamic projections require selected fields.</param>
+    /// <param name="includeTotal">Whether to count matching records. False avoids Count; inspect TotalCalculated before using TotalRecords.</param>
+    /// <param name="skip">Matching records to skip.</param>
+    /// <param name="limit">Logical limit; zero reads all remaining rows in bounded physical batches.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <param name="batch">Physical batch size, capped by the ORM maximum.</param>
+    /// <returns>Selected data and a flag indicating whether the total was calculated.</returns>
+    Task<PagedResult<dynamic>> SelectDynamic<T>(SearchParam search, bool includeTotal, int skip = 0, int limit = 100,
+        CancellationToken cancellationToken = default, int? batch = null) where T : DBModel;
+
     /// <summary>
     /// Selects the first record matching an optional <see cref="SearchParam"/>.
     /// </summary>

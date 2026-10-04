@@ -32,6 +32,7 @@ public sealed class DBTransactionManager(IDatabaseProvider provider) : IDBTransa
         Func<Task<TResult>> action,
         CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (_current is not null)
         {
             return await action();
@@ -43,6 +44,7 @@ public sealed class DBTransactionManager(IDatabaseProvider provider) : IDBTransa
         try
         {
             var result = await action();
+            cancellationToken.ThrowIfCancellationRequested();
             await transaction.Commit(cancellationToken);
             return result;
         }
@@ -50,7 +52,7 @@ public sealed class DBTransactionManager(IDatabaseProvider provider) : IDBTransa
         {
             try
             {
-                await transaction.Rollback(cancellationToken);
+                await transaction.Rollback(CancellationToken.None);
             }
             catch
             {

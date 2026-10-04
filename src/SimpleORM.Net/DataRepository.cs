@@ -17,15 +17,23 @@ public sealed class DataRepository(
     IExtensionService extensions,
     IAuditService audit,
     ISearchParamNormalizer searchNormalizer,
-    SimpleOrmOptions options) : IDataRepository
+    SimpleOrmOptions options,
+    SimpleOrmExecutionContext? executionContext = null) : IDataRepository
 {
+    private readonly ITenantProvider operationTenant = executionContext?.Wrap(tenantProvider) ?? tenantProvider;
+
     /// <inheritdoc />
-    public async Task<PagedResult<T>> Select<T>(SearchParam? search = null, int skip = 0, int limit = 100, CancellationToken cancellationToken = default, int? batch = null) where T : DBModel
+    public Task<PagedResult<T>> Select<T>(SearchParam? search = null, int skip = 0, int limit = 100, CancellationToken cancellationToken = default, int? batch = null) where T : DBModel =>
+        Select<T>(search, true, skip, limit, cancellationToken, batch);
+
+    /// <inheritdoc />
+    public async Task<PagedResult<T>> Select<T>(SearchParam? search, bool includeTotal, int skip = 0, int limit = 100, CancellationToken cancellationToken = default, int? batch = null) where T : DBModel
     {
         if (skip < 0 || limit < 0) throw new ArgumentOutOfRangeException();
+        cancellationToken.ThrowIfCancellationRequested();
         var param = searchNormalizer.Normalize<T>(search);
-        var total = await provider.Count<T>(param, cancellationToken);
-        var available = Math.Max(0, total - skip);
+        var total = includeTotal ? await provider.Count<T>(param, cancellationToken) : 0;
+        var available = includeTotal ? Math.Max(0, total - skip) : long.MaxValue;
         var target = limit == 0 ? available : Math.Min(limit, available);
         var batchSize = BatchResolver.Resolve(batch, options.Batch.Select);
         var data = new List<T>();
@@ -33,6 +41,7 @@ public sealed class DataRepository(
         long remaining = target;
         while (remaining > 0)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var take = (int)Math.Min(batchSize, remaining);
             var chunk = await provider.Select<T>(param, position, take, cancellationToken);
             if (chunk.Count == 0) break;
@@ -43,7 +52,7 @@ public sealed class DataRepository(
         }
         await extensions.Load(data, cancellationToken);
         ApplyDefaults(data);
-        return new PagedResult<T> { Data = data, TotalRecords = total, Skipped = skip, Limit = limit };
+        return new PagedResult<T> { Data = data, TotalRecords = total, TotalCalculated = includeTotal, Skipped = skip, Limit = limit };
     }
 
     /// <inheritdoc />
@@ -68,8 +77,26 @@ public sealed class DataRepository(
         Select<T>(ExpressionTranslator.Translate(expression, search), skip, limit, cancellationToken, batch);
 
     /// <inheritdoc />
+    public Task<PagedResult<T>> Select<T>(bool includeTotal, int skip = 0, int limit = 100, CancellationToken cancellationToken = default, int? batch = null) where T : DBModel =>
+        Select<T>((SearchParam?)null, includeTotal, skip, limit, cancellationToken, batch);
+
+    /// <inheritdoc />
+    public Task<PagedResult<T>> Select<T>(Expression<Func<T, bool>> expression, bool includeTotal, int skip = 0, int limit = 100, CancellationToken cancellationToken = default, int? batch = null) where T : DBModel =>
+        Select<T>(ExpressionTranslator.Translate(expression, null), includeTotal, skip, limit, cancellationToken, batch);
+
+    /// <inheritdoc />
+    public Task<PagedResult<T>> Select<T>(Expression<Func<T, bool>> expression, SearchParam? search, bool includeTotal, int skip = 0, int limit = 100, CancellationToken cancellationToken = default, int? batch = null) where T : DBModel =>
+        Select<T>(ExpressionTranslator.Translate(expression, search), includeTotal, skip, limit, cancellationToken, batch);
+
+    /// <inheritdoc />
+    public Task<PagedResult<dynamic>> SelectDynamic<T>(SearchParam search, int skip = 0, int limit = 100,
+        CancellationToken cancellationToken = default, int? batch = null) where T : DBModel =>
+        SelectDynamic<T>(search, true, skip, limit, cancellationToken, batch);
+
+    /// <inheritdoc />
     public async Task<PagedResult<dynamic>> SelectDynamic<T>(
         SearchParam search,
+        bool includeTotal,
         int skip = 0,
         int limit = 100,
         CancellationToken cancellationToken = default,
@@ -93,11 +120,9 @@ public sealed class DataRepository(
                 "SelectDynamic requires at least one selected field.");
         }
 
-        var total = await provider.Count<T>(
-            param,
-            cancellationToken);
+        var total = includeTotal ? await provider.Count<T>(param, cancellationToken) : 0;
 
-        var available = Math.Max(0, total - skip);
+        var available = includeTotal ? Math.Max(0, total - skip) : long.MaxValue;
         var target = limit == 0
             ? available
             : Math.Min(limit, available);
@@ -112,6 +137,7 @@ public sealed class DataRepository(
 
         while (remaining > 0)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var take = (int)Math.Min(batchSize, remaining);
             var chunk = await provider.SelectDynamic<T>(
                 param,
@@ -138,6 +164,7 @@ public sealed class DataRepository(
         {
             Data = data,
             TotalRecords = total,
+            TotalCalculated = includeTotal,
             Skipped = skip,
             Limit = limit
         };
@@ -259,7 +286,7 @@ public sealed class DataRepository(
         var tenantRequired = options.MultiTenancy.Enabled
             && modelMetadata.TenantScoped;
         var tenant = tenantRequired
-            ? tenantProvider.GetTenant()
+            ? operationTenant.GetTenant()
             : null;
 
         if (tenantRequired && string.IsNullOrWhiteSpace(tenant))

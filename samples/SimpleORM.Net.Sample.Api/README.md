@@ -715,3 +715,7 @@ The same dotted paths can be supplied through `SearchParam` and used for sorting
 ### Upsert
 
 `DBModel.Upsert` is a MongoDB last-write-wins feature for `DataState.Changed` models. It is intentionally rejected for concurrency-protected models. See the root README for the full behavior and `[DisableConcurrencyCheck]` requirement.
+
+## Scoped work and no-count reads
+
+`ScopedExecutionExamples` is registered and demonstrates `ISimpleOrmExecutor.Run`, mixed-model `Transaction`, and `Select(includeTotal: false)` for workers. It does not execute automatically. Existing request-scoped customer endpoints retain counted pagination. See the root README for tenant overrides, `TotalCalculated` and callback lifetime rules. The custom sample extension service observes the operation tenant through `SimpleOrmExecutionContext`.
