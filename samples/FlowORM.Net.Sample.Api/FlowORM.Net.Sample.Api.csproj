@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup><IsPackable>false</IsPackable></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/FlowORM.Net/FlowORM.Net.csproj" />
+    <ProjectReference Include="../../src/FlowORM.Net.MongoDB/FlowORM.Net.MongoDB.csproj" />
+    <ProjectReference Include="../../src/FlowORM.Net.SqlServer/FlowORM.Net.SqlServer.csproj" />
+    <ProjectReference Include="../../src/FlowORM.Net.AspNetCore/FlowORM.Net.AspNetCore.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+  <IsPackable>true</IsPackable>
+  <PackageId>FlowORM.Net.AspNetCore</PackageId>
+  <Description>ASP.NET Core integration for FlowORM.Net.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+  <ProjectReference Include="../FlowORM.Net/FlowORM.Net.csproj"/>
+  <FrameworkReference Include="Microsoft.AspNetCore.App"/>
+  </ItemGroup>
+</Project>

@@ -1,8 +1,8 @@
 $ dotnet --info
 bash: line 43: dotnet: command not found
-$ dotnet restore SimpleORM.Net.slnx
+$ dotnet restore FlowORM.Net.slnx
 bash: line 44: dotnet: command not found
-$ dotnet build SimpleORM.Net.slnx -c Release --no-restore
+$ dotnet build FlowORM.Net.slnx -c Release --no-restore
 bash: line 45: dotnet: command not found
-$ dotnet test tests/SimpleORM.Net.Tests/SimpleORM.Net.Tests.csproj -c Release --no-build
+$ dotnet test tests/FlowORM.Net.Tests/FlowORM.Net.Tests.csproj -c Release --no-build
 bash: line 46: dotnet: command not found

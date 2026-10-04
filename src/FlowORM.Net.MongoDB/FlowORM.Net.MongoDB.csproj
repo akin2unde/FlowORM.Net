@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><IsPackable>true</IsPackable>
+  <PackageId>FlowORM.Net.MongoDB</PackageId>
+  <Description>MongoDB provider for FlowORM.Net.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="FlowORM.Net.Tests" />
+  </ItemGroup>
+  <ItemGroup><ProjectReference Include="../FlowORM.Net/FlowORM.Net.csproj"/>
+  <PackageReference Include="MongoDB.Driver"/></ItemGroup>
+</Project>

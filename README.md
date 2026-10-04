@@ -1,11 +1,11 @@
-# SimpleORM.Net
+# FlowORM.Net
 
-[![NuGet](https://img.shields.io/nuget/v/SimpleORM.Net.svg?label=NuGet)](https://www.nuget.org/packages/SimpleORM.Net/)
+[![NuGet](https://img.shields.io/nuget/v/FlowORM.Net.svg?label=NuGet)](https://www.nuget.org/packages/FlowORM.Net/)
 
 
 A lightweight, provider-agnostic ORM for .NET 10 with support for SQL Server and MongoDB.
 
-SimpleORM.Net provides a consistent repository API across relational and document databases while handling common application concerns such as multi-tenancy, automatic schema synchronization, optimistic concurrency, dynamic queries, transactions, model extensions, indexing, aggregation, soft deletion, and auditing.
+FlowORM.Net provides a consistent repository API across relational and document databases while handling common application concerns such as multi-tenancy, automatic schema synchronization, optimistic concurrency, dynamic queries, transactions, model extensions, indexing, aggregation, soft deletion, and auditing.
 
 ## Features
 
@@ -52,7 +52,7 @@ SimpleORM.Net provides a consistent repository API across relational and documen
 Install the core package:
 
 ```bash
-dotnet add package SimpleORM.Net
+dotnet add package FlowORM.Net
 ```
 
 Then install the provider required by your application.
@@ -60,13 +60,13 @@ Then install the provider required by your application.
 ### SQL Server
 
 ```bash
-dotnet add package SimpleORM.Net.SqlServer
+dotnet add package FlowORM.Net.SqlServer
 ```
 
 ### MongoDB
 
 ```bash
-dotnet add package SimpleORM.Net.MongoDB
+dotnet add package FlowORM.Net.MongoDB
 ```
 
 ---
@@ -75,16 +75,16 @@ dotnet add package SimpleORM.Net.MongoDB
 
 ## SQL Server
 
-Register SimpleORM:
+Register FlowORM:
 
 ```csharp
-builder.Services.AddSimpleOrm(options =>
+builder.Services.AddFlowOrm(options =>
 {
     options.Connection.ConnectionString =
         builder.Configuration.GetConnectionString("DefaultConnection");
 });
 
-builder.Services.AddSimpleOrmSqlServer();
+builder.Services.AddFlowOrmSqlServer();
 ```
 
 Example `appsettings.json`:
@@ -102,13 +102,13 @@ Example `appsettings.json`:
 ## MongoDB
 
 ```csharp
-builder.Services.AddSimpleOrm(options =>
+builder.Services.AddFlowOrm(options =>
 {
     options.Connection.ConnectionString =
         builder.Configuration.GetConnectionString("MongoDb");
 });
 
-builder.Services.AddSimpleOrmMongoDB();
+builder.Services.AddFlowOrmMongoDB();
 ```
 
 Example:
@@ -157,7 +157,7 @@ public class Product : DBModel
 }
 ```
 
-`DBModel` provides the common SimpleORM model infrastructure including Code, state tracking, tenant information, concurrency versioning, timestamps, and other ORM metadata.
+`DBModel` provides the common FlowORM model infrastructure including Code, state tracking, tenant information, concurrency versioning, timestamps, and other ORM metadata.
 
 ---
 
@@ -195,7 +195,7 @@ var product = new Product
 await _repository.Save(product);
 ```
 
-SimpleORM automatically generates a Code when one has not been supplied.
+FlowORM automatically generates a Code when one has not been supplied.
 
 ---
 
@@ -221,7 +221,7 @@ await _repository.Save(product);
 
 # Batch Save
 
-SimpleORM supports batch operations:
+FlowORM supports batch operations:
 
 ```csharp
 await _repository.Save(products);
@@ -272,7 +272,7 @@ var result = await _repository.Select<Product>(
     limit: 0);
 ```
 
-SimpleORM may still read the records internally in bounded batches.
+FlowORM may still read the records internally in bounded batches.
 
 ---
 
@@ -379,7 +379,7 @@ Multiple sort fields can be used where supported.
 
 # Count
 
-SimpleORM performs Count directly in the database.
+FlowORM performs Count directly in the database.
 
 ```csharp
 var count = await _repository.Count<Product>(
@@ -392,7 +392,7 @@ This does not load all matching records into application memory.
 
 # Sum
 
-SimpleORM supports database-side Sum aggregation.
+FlowORM supports database-side Sum aggregation.
 
 ```csharp
 var total = await _repository.Sum<Sale, decimal>(
@@ -442,7 +442,7 @@ public SaleStatus Status { get; set; }
 public DateTime SoldAt { get; set; }
 ```
 
-SimpleORM creates the equivalent composite/compound index for the configured provider.
+FlowORM creates the equivalent composite/compound index for the configured provider.
 
 ---
 
@@ -465,7 +465,7 @@ public string Sku { get; set; } = string.Empty;
 
 # Multi-Tenancy
 
-SimpleORM supports tenant-aware models.
+FlowORM supports tenant-aware models.
 
 When multi-tenancy is enabled, tenant-scoped queries automatically include the current tenant.
 
@@ -475,13 +475,13 @@ Application code can therefore query normally:
 var products = await _repository.Select<Product>();
 ```
 
-while SimpleORM applies the tenant restriction automatically.
+while FlowORM applies the tenant restriction automatically.
 
 ---
 
 # Tenant-Aware Indexes
 
-For tenant-scoped models, SimpleORM automatically includes the tenant in managed indexes where appropriate.
+For tenant-scoped models, FlowORM automatically includes the tenant in managed indexes where appropriate.
 
 For example:
 
@@ -496,7 +496,7 @@ conceptually becomes:
 (Tenant, Category)
 ```
 
-This matches the queries SimpleORM generates:
+This matches the queries FlowORM generates:
 
 ```text
 Tenant = currentTenant AND Category = ...
@@ -587,7 +587,7 @@ Database becomes Version 5
 Person B attempts to save Version 4
 ```
 
-SimpleORM detects that the record changed after Person B loaded it and throws:
+FlowORM detects that the record changed after Person B loaded it and throws:
 
 ```csharp
 DBConcurrencyException
@@ -618,7 +618,7 @@ The Version remains available, but concurrent modifications are not rejected for
 
 # Upsert
 
-SimpleORM supports Upsert for providers that implement it.
+FlowORM supports Upsert for providers that implement it.
 
 Upsert means:
 
@@ -646,7 +646,7 @@ This is useful for synchronization and import scenarios where the caller may not
 
 Upsert is a last-write-wins operation and therefore conflicts with normal optimistic concurrency semantics.
 
-If a model uses concurrency protection, SimpleORM does not silently bypass the Version check.
+If a model uses concurrency protection, FlowORM does not silently bypass the Version check.
 
 Use Upsert only where last-write-wins behavior is intentional.
 
@@ -672,9 +672,9 @@ Concurrency protection also applies to delete operations unless explicitly disab
 
 # Transactions
 
-SimpleORM supports transactions.
+FlowORM supports transactions.
 
-Operations automatically reuse an existing SimpleORM transaction when one is active.
+Operations automatically reuse an existing FlowORM transaction when one is active.
 
 This allows multiple repository operations to participate in the same transaction without each operation independently committing.
 
@@ -695,7 +695,7 @@ The transaction is committed only when the outer transaction completes successfu
 
 # Automatic Schema Synchronization
 
-SimpleORM can synchronize the database schema with model metadata when the application starts.
+FlowORM can synchronize the database schema with model metadata when the application starts.
 
 Depending on the provider and configuration, synchronization can handle changes such as:
 
@@ -714,7 +714,7 @@ Potentially destructive schema changes are controlled separately and should be e
 
 # Model Extensions
 
-SimpleORM supports extending models without adding physical properties to the original model.
+FlowORM supports extending models without adding physical properties to the original model.
 
 An extendable model can store dynamic extension values through:
 
@@ -875,7 +875,7 @@ Only the requested fields are projected by MongoDB.
 
 # SQL Server Bulk Operations
 
-SimpleORM's SQL Server provider uses bulk and set-based operations for high-volume writes.
+FlowORM's SQL Server provider uses bulk and set-based operations for high-volume writes.
 
 Insert operations use `SqlBulkCopy`.
 
@@ -907,7 +907,7 @@ Generated Codes use randomized characters rather than sequential database counte
 
 # Audit Trail
 
-SimpleORM can maintain audit information for models where auditing is enabled.
+FlowORM can maintain audit information for models where auditing is enabled.
 
 Audit functionality is optional and can be configured according to application requirements.
 
@@ -915,7 +915,7 @@ Audit functionality is optional and can be configured according to application r
 
 # Error Logging
 
-SimpleORM can persist application/ORM errors to the configured database when database error logging is enabled.
+FlowORM can persist application/ORM errors to the configured database when database error logging is enabled.
 
 Error logging is optional.
 
@@ -977,13 +977,13 @@ remains the same regardless of the configured provider.
 
 Some provider-specific capabilities, particularly document-oriented MongoDB features, naturally have no SQL Server equivalent.
 
-SimpleORM throws an explicit unsupported-operation error rather than silently generating incorrect queries when a feature cannot be represented by the active provider.
+FlowORM throws an explicit unsupported-operation error rather than silently generating incorrect queries when a feature cannot be represented by the active provider.
 
 ---
 
 # Performance
 
-SimpleORM is designed to avoid unnecessary database round trips.
+FlowORM is designed to avoid unnecessary database round trips.
 
 Key performance features include:
 
@@ -1005,7 +1005,7 @@ Actual performance depends on database configuration, indexes, network latency, 
 
 # Sample Project
 
-The repository includes a sample project demonstrating the major SimpleORM features.
+The repository includes a sample project demonstrating the major FlowORM features.
 
 The sample covers areas such as:
 
@@ -1023,7 +1023,7 @@ The sample covers areas such as:
 - indexing
 - multi-tenancy
 
-Use the sample project alongside this README when integrating SimpleORM into a new application.
+Use the sample project alongside this README when integrating FlowORM into a new application.
 
 ---
 
@@ -1040,19 +1040,19 @@ This includes more detailed information about architecture and advanced features
 Install the core package:
 
 ```bash
-dotnet add package SimpleORM.Net
+dotnet add package FlowORM.Net
 ```
 
 SQL Server:
 
 ```bash
-dotnet add package SimpleORM.Net.SqlServer
+dotnet add package FlowORM.Net.SqlServer
 ```
 
 MongoDB:
 
 ```bash
-dotnet add package SimpleORM.Net.MongoDB
+dotnet add package FlowORM.Net.MongoDB
 ```
 
 Package versions and release history are available through NuGet and the repository releases.
@@ -1087,9 +1087,9 @@ See the repository license for licensing information.
 
 # Runtime Entities
 
-SimpleORM can create and query entities at runtime without generating CLR classes and without changing `IDataRepository`.
+FlowORM can create and query entities at runtime without generating CLR classes and without changing `IDataRepository`.
 
-Runtime entities use the separate `IRuntimeDataRepository` and `ISchemaManager` APIs while sharing SimpleORM concepts such as `SearchParam`, paging, tenant scoping, transactions, Code generation, soft delete, concurrency versioning, Count and Sum.
+Runtime entities use the separate `IRuntimeDataRepository` and `ISchemaManager` APIs while sharing FlowORM concepts such as `SearchParam`, paging, tenant scoping, transactions, Code generation, soft delete, concurrency versioning, Count and Sum.
 
 ## Create a Runtime Entity
 
@@ -1264,7 +1264,7 @@ var search = new SearchParam
 };
 ```
 
-SimpleORM validates `Details` as a defined JSON runtime field and passes the remaining path to the provider. MongoDB supports native dotted document/array paths. SQL Server translates scalar JSON paths through its JSON functions; array-element matching that requires `OPENJSON` remains provider-specific.
+FlowORM validates `Details` as a defined JSON runtime field and passes the remaining path to the provider. MongoDB supports native dotted document/array paths. SQL Server translates scalar JSON paths through its JSON functions; array-element matching that requires `OPENJSON` remains provider-specific.
 
 ## Runtime Bulk Update and Delete
 
@@ -1294,7 +1294,7 @@ MongoDB uses `UpdateMany` / `DeleteMany` (or a bulk soft-delete update). SQL Ser
 
 ## Database Name Validation
 
-SimpleORM validates the target database before opening provider connections.
+FlowORM validates the target database before opening provider connections.
 
 - With individual connection settings, set `Connection.DatabaseName`.
 - With a MongoDB connection string, either set `Connection.DatabaseName` or include the database in the connection string.
@@ -1378,14 +1378,14 @@ A cursor scan is not a change feed or a point-in-time snapshot. Concurrent inser
 
 # Scoped Run and Transaction
 
-`AddSimpleOrm` now registers `ISimpleOrmExecutor` automatically. Inject it into a worker or service:
+`AddFlowOrm` now registers `IFlowOrmExecutor` automatically. Inject it into a worker or service:
 
 ```csharp
-using SimpleORM.Net.Abstractions;
-using SimpleORM.Net.Models;
-using SimpleORM.Net.Query;
+using FlowORM.Net.Abstractions;
+using FlowORM.Net.Models;
+using FlowORM.Net.Query;
 
-public sealed class CustomerWorker(ISimpleOrmExecutor orm)
+public sealed class CustomerWorker(IFlowOrmExecutor orm)
 {
     public Task<PagedResult<Customer>> ReadPage(SearchParam search, string tenant, CancellationToken ct) =>
         orm.Run((repo, token) => repo.Select<Customer>(search,
@@ -1419,7 +1419,7 @@ Transaction resolves the repository and IDBTransactionManager from the same scop
 | Situation | Recommended access |
 |---|---|
 | Normal API request service | Inject IDataRepository; keep the existing request scope |
-| Hosted worker/scheduled process | Inject ISimpleOrmExecutor; Run creates the operation scope |
+| Hosted worker/scheduled process | Inject IFlowOrmExecutor; Run creates the operation scope |
 | Several atomic writes | Transaction, or the existing scoped IDBTransactionManager |
 | Reading the next batch | Run with Select(includeTotal: false) |
 
@@ -1433,7 +1433,7 @@ Tenant and lifetime rules:
 - Nested executor calls create new scopes and independent transactions. Use the callback's repository for all work that must participate in the same transaction, and await that work sequentially.
 - Return materialized results rather than repositories or deferred operations whose scope has already ended.
 
-`SimpleOrmExecutionContext` is scoped. The built-in repository, extension service and both typed/runtime providers wrap the configured tenant provider through this context. Custom providers/services that resolve tenants directly can participate without changing ITenantProvider:
+`FlowOrmExecutionContext` is scoped. The built-in repository, extension service and both typed/runtime providers wrap the configured tenant provider through this context. Custom providers/services that resolve tenants directly can participate without changing ITenantProvider:
 
 ```csharp
 // In a custom provider/service constructor:

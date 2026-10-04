@@ -10,7 +10,7 @@ The recorded create throughput was 3,471 records/second for SQL Server versus 53
 
 ## SQL Server write-path changes
 
-- Inserts now use `SqlBulkCopy` for each SimpleORM batch.
+- Inserts now use `SqlBulkCopy` for each FlowORM batch.
 - Updates stage the batch into a temporary SQL table with `SqlBulkCopy`, then execute one set-based `UPDATE ... FROM` statement.
 - Hard deletes stage keys and execute one joined `DELETE` statement.
 - Soft deletes stage keys/audit values and execute one set-based `UPDATE` statement.
@@ -18,7 +18,7 @@ The recorded create throughput was 3,471 records/second for SQL Server versus 53
 - Soft-deleted rows remain protected from ordinary updates.
 - The previous parameter-count bottleneck is removed from the bulk write path, so a SQL batch size of 500 can be tested fairly against MongoDB.
 
-These changes retain the existing SimpleORM transaction boundary. They reduce command round-trips but do not guarantee SQL Server and MongoDB will have identical throughput because their storage, indexing, constraint and durability behavior differs.
+These changes retain the existing FlowORM transaction boundary. They reduce command round-trips but do not guarantee SQL Server and MongoDB will have identical throughput because their storage, indexing, constraint and durability behavior differs.
 
 ## Correctness fixes
 

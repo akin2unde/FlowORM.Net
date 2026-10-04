@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <PackageId>FlowORM.Net</PackageId>
+    <Description>Lightweight provider-based ORM core for .NET 10.</Description>
+    <PackageTags>orm;dotnet;sqlserver;mongodb;database;crud;multitenancy</PackageTags>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Cronos" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
+  </ItemGroup>
+</Project>

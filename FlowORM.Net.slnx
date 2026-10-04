@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/FlowORM.Net/FlowORM.Net.csproj" />
+    <Project Path="src/FlowORM.Net.SqlServer/FlowORM.Net.SqlServer.csproj" />
+    <Project Path="src/FlowORM.Net.AspNetCore/FlowORM.Net.AspNetCore.csproj" />
+    <Project Path="src/FlowORM.Net.Http/FlowORM.Net.Http.csproj" />
+    <Project Path="src/FlowORM.Net.MongoDB/FlowORM.Net.MongoDB.csproj" />
+  </Folder>
+  <Folder Name="/samples/"><Project Path="samples/FlowORM.Net.Sample.Api/FlowORM.Net.Sample.Api.csproj" /></Folder>
+  <Folder Name="/tests/"><Project Path="tests/FlowORM.Net.Tests/FlowORM.Net.Tests.csproj" /></Folder>
+</Solution>

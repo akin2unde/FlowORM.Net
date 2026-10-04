@@ -1,4 +1,12 @@
 
+## 2026-10-04 - FlowORM rename
+
+- Renamed the library and public API from SimpleORM.Net to FlowORM.Net.
+- Renamed NuGet package IDs, projects, namespaces, samples, tests, registration methods, options, and documentation to FlowORM.
+- Updated repository/package URLs to `akin2unde/FlowORM.Net`.
+- Preserved the existing `__SimpleOrmRuntimeEntities` physical metadata table/collection name for database upgrade compatibility.
+
+
 ## 2026-09-30 - Runtime entities
 
 - Added `ISchemaManager` for runtime entity, field, and index management.
@@ -13,7 +21,7 @@
 ## Unreleased - optimistic concurrency
 
 - Added ORM-managed `DBModel.Version` optimistic concurrency token.
-- Added `SimpleOrmOptions.Concurrency.Enabled`, enabled by default.
+- Added `FlowOrmOptions.Concurrency.Enabled`, enabled by default.
 - Added `[DisableConcurrencyCheck]` for models that intentionally allow last-write-wins updates.
 - Added `DBConcurrencyException` for stale update/delete detection.
 - SQL Server checks versions inside the existing bulk staging join and increments the version atomically.

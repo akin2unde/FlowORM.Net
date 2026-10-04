@@ -1,6 +1,6 @@
 # Indexing, aggregation and MongoDB document queries
 
-This document describes the indexing, tenant-aware uniqueness, `Sum`, MongoDB nested/dictionary querying, `Upsert`, and full-connection-string behavior added to SimpleORM.Net.
+This document describes the indexing, tenant-aware uniqueness, `Sum`, MongoDB nested/dictionary querying, `Upsert`, and full-connection-string behavior added to FlowORM.Net.
 
 ## Index and Unique
 
