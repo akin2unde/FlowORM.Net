@@ -143,7 +143,15 @@ public sealed class MongoRuntimeProvider : IRuntimeDatabaseProvider, IRuntimeSch
 
         if (!upsert)
         {
-            await Col(entity).InsertManyAsync(session, documents, cancellationToken: ct);
+            if (session is null)
+            {
+                await Col(entity).InsertManyAsync(documents, cancellationToken: ct);
+            }
+            else
+            {
+                await Col(entity).InsertManyAsync(session, documents, cancellationToken: ct);
+            }
+
             return documents.Select(ToDynamic).ToList();
         }
 
@@ -156,7 +164,15 @@ public sealed class MongoRuntimeProvider : IRuntimeDatabaseProvider, IRuntimeSch
             })
             .ToList();
 
-        await Col(entity).BulkWriteAsync(session, writes, cancellationToken: ct);
+        if (session is null)
+        {
+            await Col(entity).BulkWriteAsync(writes, cancellationToken: ct);
+        }
+        else
+        {
+            await Col(entity).BulkWriteAsync(session, writes, cancellationToken: ct);
+        }
+
         return documents.Select(ToDynamic).ToList();
     }
     public async Task Update(string entity, string code, IDictionary<string, object?> data, IDBTransaction transaction, CancellationToken ct = default)
@@ -166,7 +182,15 @@ public sealed class MongoRuntimeProvider : IRuntimeDatabaseProvider, IRuntimeSch
         var updates = data.Where(x => d.Fields.Any(f => Eq(f.Name, x.Key))).Select(x => Builders<BsonDocument>.Update.Set(x.Key, BsonValue.Create(x.Value))).ToList();
         updates.Add(Builders<BsonDocument>.Update.Set("UpdatedAt", DateTime.UtcNow));
         if (d.ConcurrencyEnabled) updates.Add(Builders<BsonDocument>.Update.Inc("Version", 1));
-        await Col(entity).UpdateOneAsync(session, CodeScope(d, code), Builders<BsonDocument>.Update.Combine(updates), cancellationToken: ct);
+        var update = Builders<BsonDocument>.Update.Combine(updates);
+        if (session is null)
+        {
+            await Col(entity).UpdateOneAsync(CodeScope(d, code), update, cancellationToken: ct);
+        }
+        else
+        {
+            await Col(entity).UpdateOneAsync(session, CodeScope(d, code), update, cancellationToken: ct);
+        }
     }
     public async Task Delete(string entity, string code, IDBTransaction transaction, CancellationToken ct = default)
     {
@@ -176,9 +200,23 @@ public sealed class MongoRuntimeProvider : IRuntimeDatabaseProvider, IRuntimeSch
         {
             var u = Builders<BsonDocument>.Update.Set("DeletedAt", DateTime.UtcNow).Set("UpdatedAt", DateTime.UtcNow);
             if (d.ConcurrencyEnabled) u = u.Inc("Version", 1);
-            await Col(entity).UpdateOneAsync(session, CodeScope(d, code), u, cancellationToken: ct);
+            if (session is null)
+            {
+                await Col(entity).UpdateOneAsync(CodeScope(d, code), u, cancellationToken: ct);
+            }
+            else
+            {
+                await Col(entity).UpdateOneAsync(session, CodeScope(d, code), u, cancellationToken: ct);
+            }
         }
-        else await Col(entity).DeleteOneAsync(session, CodeScope(d, code), cancellationToken: ct);
+        else if (session is null)
+        {
+            await Col(entity).DeleteOneAsync(CodeScope(d, code), cancellationToken: ct);
+        }
+        else
+        {
+            await Col(entity).DeleteOneAsync(session, CodeScope(d, code), cancellationToken: ct);
+        }
     }
     public async Task<long> Update(
         string entity,
@@ -204,11 +242,11 @@ public sealed class MongoRuntimeProvider : IRuntimeDatabaseProvider, IRuntimeSch
             updates.Add(Builders<BsonDocument>.Update.Inc("Version", 1));
         }
 
-        var result = await Col(entity).UpdateManyAsync(
-            session,
-            Filter(definition, search),
-            Builders<BsonDocument>.Update.Combine(updates),
-            cancellationToken: ct);
+        var filter = Filter(definition, search);
+        var update = Builders<BsonDocument>.Update.Combine(updates);
+        var result = session is null
+            ? await Col(entity).UpdateManyAsync(filter, update, cancellationToken: ct)
+            : await Col(entity).UpdateManyAsync(session, filter, update, cancellationToken: ct);
 
         return result.ModifiedCount;
     }
@@ -225,7 +263,9 @@ public sealed class MongoRuntimeProvider : IRuntimeDatabaseProvider, IRuntimeSch
 
         if (!definition.SoftDelete)
         {
-            var deleted = await Col(entity).DeleteManyAsync(session, filter, cancellationToken: ct);
+            var deleted = session is null
+                ? await Col(entity).DeleteManyAsync(filter, ct)
+                : await Col(entity).DeleteManyAsync(session, filter, cancellationToken: ct);
             return deleted.DeletedCount;
         }
 
@@ -239,7 +279,9 @@ public sealed class MongoRuntimeProvider : IRuntimeDatabaseProvider, IRuntimeSch
             update = update.Inc("Version", 1);
         }
 
-        var result = await Col(entity).UpdateManyAsync(session, filter, update, cancellationToken: ct);
+        var result = session is null
+            ? await Col(entity).UpdateManyAsync(filter, update, cancellationToken: ct)
+            : await Col(entity).UpdateManyAsync(session, filter, update, cancellationToken: ct);
         return result.ModifiedCount;
     }
 

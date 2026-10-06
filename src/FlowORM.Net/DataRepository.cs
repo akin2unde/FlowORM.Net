@@ -20,6 +20,7 @@ public sealed class DataRepository(
     FlowOrmOptions options,
     FlowOrmExecutionContext? executionContext = null) : IDataRepository
 {
+    private readonly FlowOrmExecutionContext execution = executionContext ?? new FlowOrmExecutionContext();
     private readonly ITenantProvider operationTenant = executionContext?.Wrap(tenantProvider) ?? tenantProvider;
 
     /// <inheritdoc />
@@ -226,6 +227,22 @@ public sealed class DataRepository(
         Sum(field, ExpressionTranslator.Translate(expression, search), cancellationToken);
 
     /// <inheritdoc />
+    public async Task RunWithoutTenant(Func<IDataRepository, Task> action)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        using var scope = execution.BeginSaveWithoutTenant();
+        await action(this);
+    }
+
+    /// <inheritdoc />
+    public async Task<TResult> RunWithoutTenant<TResult>(Func<IDataRepository, Task<TResult>> action)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        using var scope = execution.BeginSaveWithoutTenant();
+        return await action(this);
+    }
+
+    /// <inheritdoc />
     public async Task<T> Save<T>(T model, CancellationToken cancellationToken = default) where T : DBModel
     {
         var result = await Save(new[] { model }, cancellationToken, 1);
@@ -289,15 +306,16 @@ public sealed class DataRepository(
             ? operationTenant.GetTenant()
             : null;
 
-        if (tenantRequired && string.IsNullOrWhiteSpace(tenant))
+        if (tenantRequired && string.IsNullOrWhiteSpace(tenant) && !execution.CanSaveWithoutTenant)
         {
             throw new InvalidOperationException(
-                $"Tenant is required for model '{modelMetadata.ModelName}'.");
+                $"Tenant is required for model '{modelMetadata.ModelName}'. " +
+                "Use RunWithoutTenant only for intentional bootstrap saves such as creating the first tenant.");
         }
 
         foreach (var item in items)
         {
-            if (tenantRequired)
+            if (tenantRequired && !string.IsNullOrWhiteSpace(tenant))
             {
                 item.Tenant = tenant;
             }

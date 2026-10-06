@@ -93,6 +93,27 @@ public sealed class ExecutionAndSelectTests
     }
 
     [Fact]
+    public async Task RunWithoutTenantAllowsOnlyScopedBootstrapSaveAndRestoresValidation()
+    {
+        var store = new ProbeStore(0);
+        await using var services = Build(store, noTenant: true);
+        await using var scope = services.CreateAsyncScope();
+        var repository = scope.ServiceProvider.GetRequiredService<IDataRepository>();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            repository.Save(new Customer { Code = "BEFORE" }));
+
+        await repository.RunWithoutTenant(async repo =>
+        {
+            var customer = await repo.Save(new Customer { Code = "BOOTSTRAP" });
+            Assert.Null(customer.Tenant);
+        });
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            repository.Save(new Customer { Code = "AFTER" }));
+    }
+
+    [Fact]
     public async Task TransactionSharesOneManagerAndCommitsBothSaves()
     {
         var store = new ProbeStore(0);
@@ -167,13 +188,13 @@ public sealed class ExecutionAndSelectTests
         Assert.Equal(new[] { 500, 500 }, store.ReadLimits.ToArray());
     }
 
-    private static ServiceProvider Build(ProbeStore store)
+    private static ServiceProvider Build(ProbeStore store, bool noTenant = false)
     {
         var services = new ServiceCollection();
         services.AddFlowOrm(options => { options.Connection.ConnectionString = "mongodb://localhost/test"; options.MultiTenancy.Enabled = true; }, typeof(Customer).Assembly);
         services.AddFlowOrmDefaultIdentityProviders();
         services.AddSingleton(store);
-        services.AddScoped<ITenantProvider>(_ => new IdentityTenant());
+        services.AddScoped<ITenantProvider>(_ => noTenant ? (ITenantProvider)new MissingTenant() : new IdentityTenant());
         services.AddScoped<IDatabaseProvider, ProbeProvider>();
         services.AddScoped<IRuntimeDatabaseProvider>(_ => new ProbeRuntimeProvider(store));
         services.AddScoped<IExtensionService>(_ => new ProbeExtensions(store));
@@ -182,6 +203,7 @@ public sealed class ExecutionAndSelectTests
     }
 
     private sealed class IdentityTenant : ITenantProvider { public string? GetTenant() => "IdentityTenant"; }
+    private sealed class MissingTenant : ITenantProvider { public string? GetTenant() => null; }
     private sealed class ProbeStore(int count)
     {
         public List<Customer> Rows { get; } = Enumerable.Range(0, count).Select(i => new Customer { Code = i.ToString("D4"), Name = "Name" + i }).ToList();

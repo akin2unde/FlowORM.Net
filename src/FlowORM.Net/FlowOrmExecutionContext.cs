@@ -1,12 +1,26 @@
+using System.Threading;
 using FlowORM.Net.Abstractions;
 
 namespace FlowORM.Net.Services;
 
-/// <summary>Scoped tenant override used by FlowORM's executor and built-in providers.</summary>
-/// <remarks>The executor sets this context before resolving its repository. It is not shared between scopes.</remarks>
+/// <summary>Scoped execution state used by FlowORM's executor and repository.</summary>
+/// <remarks>Execution flags are async-local so parallel operations in the same DI scope do not leak state into one another.</remarks>
 public sealed class FlowOrmExecutionContext
 {
+    private readonly AsyncLocal<int> _saveWithoutTenantDepth = new();
+
     internal string? TenantOverride { get; set; }
+
+    /// <summary>Gets whether the current asynchronous execution may save a tenant-scoped model without a tenant.</summary>
+    internal bool CanSaveWithoutTenant => _saveWithoutTenantDepth.Value > 0;
+
+    /// <summary>Enters a scope that permits Save to persist a tenant-scoped model when no tenant can be resolved.</summary>
+    /// <returns>A scope that restores normal tenant validation when disposed.</returns>
+    internal IDisposable BeginSaveWithoutTenant()
+    {
+        _saveWithoutTenantDepth.Value++;
+        return new SaveWithoutTenantScope(this);
+    }
 
     /// <summary>Wraps the configured tenant provider, falling back to it when no override is set.</summary>
     /// <param name="provider">The application's existing tenant provider.</param>
@@ -15,6 +29,18 @@ public sealed class FlowOrmExecutionContext
     {
         ArgumentNullException.ThrowIfNull(provider);
         return new ScopedTenantProvider(this, provider);
+    }
+
+    private sealed class SaveWithoutTenantScope(FlowOrmExecutionContext context) : IDisposable
+    {
+        private bool _disposed;
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            context._saveWithoutTenantDepth.Value = Math.Max(0, context._saveWithoutTenantDepth.Value - 1);
+        }
     }
 
     private sealed class ScopedTenantProvider(FlowOrmExecutionContext context, ITenantProvider fallback) : ITenantProvider

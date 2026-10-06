@@ -9,3 +9,7 @@ coverage/
 *.nupkg
 *.snupkg
 .env
+
+# macOS Finder metadata
+.DS_Store
+**/.DS_Store

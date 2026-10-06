@@ -21,6 +21,7 @@ using FlowORM.Net.Metadata;
 using FlowORM.Net.Models;
 
 using FlowORM.Net.MongoDB.Configuration;
+using FlowORM.Net.MongoDB.Options;
 
 using FlowORM.Net.Query;
 
@@ -40,12 +41,16 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
 
     private readonly IMongoDatabase _db;
 
+    private readonly MongoDBOptions _mongoOptions;
+
     /// <summary>Creates provider.</summary>
     public MongoDatabaseProvider(
         FlowOrmOptions o,
         IDBMetadataProvider m,
         ITenantProvider t,
-        IMongoClient client, FlowOrmExecutionContext? executionContext = null)
+        IMongoClient client,
+        MongoDBOptions mongoOptions,
+        FlowOrmExecutionContext? executionContext = null)
     {
         MongoDBConventionRegistrar.RegisterPersistence(o.EnumStorage);
 
@@ -53,6 +58,7 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
         _m = m;
         _t = executionContext?.Wrap(t) ?? t;
         _client = client;
+        _mongoOptions = mongoOptions;
 
         var databaseName = MongoConnectionResolver.RequireDatabaseName(o);
         _db = _client.GetDatabase(databaseName);
@@ -61,11 +67,14 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
     /// <inheritdoc />
     public async Task<IDBTransaction> BeginTransaction(CancellationToken ct = default)
     {
-        var s = await _client.StartSessionAsync(cancellationToken: ct);
+        if (!_mongoOptions.SupportTransactions)
+        {
+            return new MongoTx();
+        }
 
-        s.StartTransaction();
-
-        return new MongoTx(s);
+        var session = await _client.StartSessionAsync(cancellationToken: ct);
+        session.StartTransaction();
+        return new MongoTx(session);
 
     }
 
@@ -291,10 +300,18 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
         var collection = _db.GetCollection<BsonDocument>(
             metadata.TableName);
 
-        await collection.InsertManyAsync(
-            As(tr).Session,
-            documents,
-            cancellationToken: ct);
+        var mongoTransaction = As(tr);
+        if (mongoTransaction.Session is null)
+        {
+            await collection.InsertManyAsync(documents, cancellationToken: ct);
+        }
+        else
+        {
+            await collection.InsertManyAsync(
+                mongoTransaction.Session,
+                documents,
+                cancellationToken: ct);
+        }
 
     }
 
@@ -355,10 +372,13 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
             .Cast<WriteModel<BsonDocument>>()
             .ToArray();
 
-        var result = await collection.BulkWriteAsync(
-            As(transaction).Session,
-            writes,
-            cancellationToken: cancellationToken);
+        var mongoTransaction = As(transaction);
+        var result = mongoTransaction.Session is null
+            ? await collection.BulkWriteAsync(writes, cancellationToken: cancellationToken)
+            : await collection.BulkWriteAsync(
+                mongoTransaction.Session,
+                writes,
+                cancellationToken: cancellationToken);
 
         if (metadata.ConcurrencyEnabled && result.MatchedCount != models.Count)
         {
@@ -396,10 +416,13 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
                     CreateUpdateFilter(model, metadata)))
                 .ToArray();
 
-            result = await collection.BulkWriteAsync(
-                As(transaction).Session,
-                writes,
-                cancellationToken: cancellationToken);
+            var mongoTransaction = As(transaction);
+            result = mongoTransaction.Session is null
+                ? await collection.BulkWriteAsync(writes, cancellationToken: cancellationToken)
+                : await collection.BulkWriteAsync(
+                    mongoTransaction.Session,
+                    writes,
+                    cancellationToken: cancellationToken);
 
             if (metadata.ConcurrencyEnabled && result.DeletedCount != models.Count)
             {
@@ -432,10 +455,13 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
             })
             .ToArray();
 
-        result = await collection.BulkWriteAsync(
-            As(transaction).Session,
-            softDeleteWrites,
-            cancellationToken: cancellationToken);
+        var softDeleteTransaction = As(transaction);
+        result = softDeleteTransaction.Session is null
+            ? await collection.BulkWriteAsync(softDeleteWrites, cancellationToken: cancellationToken)
+            : await collection.BulkWriteAsync(
+                softDeleteTransaction.Session,
+                softDeleteWrites,
+                cancellationToken: cancellationToken);
 
         if (metadata.ConcurrencyEnabled && result.MatchedCount != models.Count)
         {

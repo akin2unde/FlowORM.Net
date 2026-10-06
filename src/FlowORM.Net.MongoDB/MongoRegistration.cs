@@ -25,6 +25,7 @@ public static class MongoRegistration
         MongoDBConventionRegistrar.Register(options);
 
         services.AddSingleton(options);
+        services.AddHostedService<MongoTransactionValidationService>();
 
         // MongoClient owns the driver's connection pools and is designed to be
         // long-lived. Both typed and runtime providers must use this same client

@@ -306,6 +306,30 @@ public interface IDataRepository
         where T : DBModel;
 
     /// <summary>
+    /// Runs a special save scope in which tenant-scoped models may be saved when no tenant can be resolved.
+    /// </summary>
+    /// <param name="action">Work to execute with this repository.</param>
+    /// <remarks>
+    /// This affects only missing-tenant validation performed by Save. It does not bypass tenant filters
+    /// for reads, updates, deletes, counts, or other repository operations. Normal validation is restored
+    /// when the callback completes, including when it throws.
+    /// </remarks>
+    Task RunWithoutTenant(Func<IDataRepository, Task> action);
+
+    /// <summary>
+    /// Runs a special save scope in which tenant-scoped models may be saved when no tenant can be resolved.
+    /// </summary>
+    /// <typeparam name="TResult">Result type returned by the callback.</typeparam>
+    /// <param name="action">Work to execute with this repository.</param>
+    /// <returns>The callback result.</returns>
+    /// <remarks>
+    /// This affects only missing-tenant validation performed by Save. It does not bypass tenant filters
+    /// for reads, updates, deletes, counts, or other repository operations. Normal validation is restored
+    /// when the callback completes, including when it throws.
+    /// </remarks>
+    Task<TResult> RunWithoutTenant<TResult>(Func<IDataRepository, Task<TResult>> action);
+
+    /// <summary>
     /// Generates a provider-specific query with values embedded for debugging purposes.
     /// </summary>
     /// <typeparam name="T">The DBModel type used to build the query.</typeparam>

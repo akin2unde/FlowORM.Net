@@ -19,7 +19,8 @@ FlowORM.Net provides a consistent repository API across relational and document 
 - Global/shared models
 - CRUD operations
 - Batch operations
-- Transactions
+- Transactions with explicit MongoDB replica-set/sharded-cluster support
+- Scoped bootstrap saves without a tenant
 - Optimistic concurrency
 - Soft and hard delete
 - Upsert support
@@ -108,7 +109,11 @@ builder.Services.AddFlowOrm(options =>
         builder.Configuration.GetConnectionString("MongoDb");
 });
 
-builder.Services.AddFlowOrmMongoDB();
+builder.Services.AddFlowOrmMongoDB(options =>
+{
+    // Leave false for standalone MongoDB.
+    options.SupportTransactions = false;
+});
 ```
 
 Example:
@@ -541,6 +546,29 @@ so two different tenants may use the same SKU while duplicates within the same t
 
 ---
 
+# Saving Without a Tenant for Bootstrap
+
+Tenant enforcement remains enabled by default. For exceptional bootstrap flows, such as creating the first tenant before an authenticated user or tenant context exists, use `RunWithoutTenant`.
+
+```csharp
+await repository.RunWithoutTenant(async repo =>
+{
+    await transactionManager.Execute(async () =>
+    {
+        await repo.Save(tenant);
+
+        user.Tenant = tenant.Code;
+        await repo.Save(user);
+    });
+});
+```
+
+The permission is scoped to the current asynchronous callback and is restored automatically even when the callback throws. It only relaxes the **missing-tenant validation performed by `Save`**. It does not bypass tenant filtering for `Select`, `Count`, `Sum`, update, delete, or other operations.
+
+The scope is execution-local, so concurrent asynchronous work using the same DI scope does not inherit the permission accidentally. Nested `RunWithoutTenant` scopes are also restored safely.
+
+---
+
 # Global Models
 
 Some data should be shared by every tenant.
@@ -672,13 +700,7 @@ Concurrency protection also applies to delete operations unless explicitly disab
 
 # Transactions
 
-FlowORM supports transactions.
-
-Operations automatically reuse an existing FlowORM transaction when one is active.
-
-This allows multiple repository operations to participate in the same transaction without each operation independently committing.
-
-Example:
+FlowORM reuses an existing transaction when one is active, so nested repository saves participate in the outer transaction and only the outer operation commits or rolls back.
 
 ```csharp
 await transactionManager.Execute(async () =>
@@ -689,7 +711,30 @@ await transactionManager.Execute(async () =>
 });
 ```
 
-The transaction is committed only when the outer transaction completes successfully.
+## MongoDB transaction support
+
+MongoDB transactions require a replica set or supported sharded cluster. FlowORM keeps standalone MongoDB safe by disabling MongoDB transactions by default.
+
+For a standalone deployment, no extra configuration is required:
+
+```csharp
+builder.Services.AddFlowOrmMongoDB();
+```
+
+`IDBTransactionManager.Execute` still runs the callback, but no MongoDB transaction is started, so rollback semantics are not available. This keeps existing grouped-save code usable on standalone MongoDB without pretending that the operations are atomic.
+
+When the MongoDB deployment supports transactions, enable them explicitly:
+
+```csharp
+builder.Services.AddFlowOrmMongoDB(options =>
+{
+    options.SupportTransactions = true;
+});
+```
+
+When `SupportTransactions` is `true`, FlowORM validates the MongoDB topology **once during application startup** using the configured singleton `IMongoClient`. A replica set or sharded cluster passes validation. A standalone server causes startup to fail with a clear configuration error. The check is not repeated for every transaction.
+
+FlowORM's typed provider, runtime provider, validation service, and transaction sessions all reuse the same singleton `IMongoClient`.
 
 ---
 
@@ -1059,32 +1104,6 @@ Package versions and release history are available through NuGet and the reposit
 
 ---
 
-# Contributing
-
-Contributions, bug reports, feature requests, tests, and documentation improvements are welcome.
-
-When contributing:
-
-1. Keep provider-independent behavior in the core package.
-2. Keep database-specific behavior in the appropriate provider.
-3. Add tests for new functionality.
-4. Update documentation when public behavior changes.
-5. Preserve backward compatibility where practical.
-
----
-
-# License
-
-See the repository license for licensing information.
-
----
-
-# Author
-
-**Akintunde Morakinyo**
-
----
-
 # Runtime Entities
 
 FlowORM can create and query entities at runtime without generating CLR classes and without changing `IDataRepository`.
@@ -1448,4 +1467,30 @@ One existing transaction limitation remains: repository Save updates supplied mo
 
 ## Validation of this update
 
-Added tests for default counted reads, no-count physical batching/fetch-all, expressions and projections, runtime reads, tenant isolation/fallback, asynchronous scope disposal, shared transactions, rollback and cancellation. The editing environment lacks the .NET SDK and database servers: executable tests and provider integration must run in CI. Local source syntax, XML, JSON and archive checks do not substitute for compilation or database integration.
+Added tests for default counted reads, no-count physical batching/fetch-all, expressions and projections, runtime reads, tenant isolation/fallback, scoped tenant-less bootstrap saves, asynchronous scope disposal, shared transactions, rollback and cancellation. The editing environment lacks the .NET SDK and database servers: executable tests and provider integration must run in CI. Local source syntax, XML, JSON and archive checks do not substitute for compilation or database integration.
+
+---
+
+# Contributing
+
+Contributions, bug reports, feature requests, tests, and documentation improvements are welcome.
+
+When contributing:
+
+1. Keep provider-independent behavior in the core package.
+2. Keep database-specific behavior in the appropriate provider.
+3. Add tests for new functionality.
+4. Update documentation when public behavior changes.
+5. Preserve backward compatibility where practical.
+
+---
+
+# License
+
+See the repository license for licensing information.
+
+---
+
+# Author
+
+**Akintunde Morakinyo**
