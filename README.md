@@ -1494,3 +1494,8 @@ See the repository license for licensing information.
 # Author
 
 **Akintunde Morakinyo**
+
+
+### Audit trail behavior
+
+Set `options.AuditTrail.Enabled = true` to persist `DBAuditTrail` entries to the `__DBAuditTrail` table/collection when typed models are inserted, updated or deleted. Audit entries are written through the same database provider and transaction as the original write. `[DisableAudit]` excludes a model, while `[DoNotAudit]` excludes individual properties from the JSON snapshot. `IncludeNewValues` controls snapshots for inserts and updates. **Historical `OldData` is not reconstructed by this implementation**, and hard deletes record the action without a new-value snapshot. Ensure the audit table is included in schema migration before the first audited write, especially if automatic migration is disabled.

@@ -12,7 +12,7 @@ public sealed class FlowOrmExecutionContext
     internal string? TenantOverride { get; set; }
 
     /// <summary>Gets whether the current asynchronous execution may save a tenant-scoped model without a tenant.</summary>
-    internal bool CanSaveWithoutTenant => _saveWithoutTenantDepth.Value > 0;
+    public bool CanSaveWithoutTenant => _saveWithoutTenantDepth.Value > 0;
 
     /// <summary>Enters a scope that permits Save to persist a tenant-scoped model when no tenant can be resolved.</summary>
     /// <returns>A scope that restores normal tenant validation when disposed.</returns>

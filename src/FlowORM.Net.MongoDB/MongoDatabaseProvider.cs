@@ -43,6 +43,8 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
 
     private readonly MongoDBOptions _mongoOptions;
 
+    private readonly FlowOrmExecutionContext _executionContext;
+
     /// <summary>Creates provider.</summary>
     public MongoDatabaseProvider(
         FlowOrmOptions o,
@@ -59,6 +61,7 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
         _t = executionContext?.Wrap(t) ?? t;
         _client = client;
         _mongoOptions = mongoOptions;
+        _executionContext = executionContext ?? new FlowOrmExecutionContext();
 
         var databaseName = MongoConnectionResolver.RequireDatabaseName(o);
         _db = _client.GetDatabase(databaseName);
@@ -830,20 +833,34 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
         if (_o.MultiTenancy.Enabled
             && metadata.TenantScoped)
         {
-            var tenant = _t.GetTenant()
-                ?? throw new InvalidOperationException(
-                    "Tenant is required.");
+            var tenant = _t.GetTenant();
 
-            var tenantColumn = metadata.Columns.First(
-                column => string.Equals(
-                    column.PropertyName,
-                    nameof(DBModel.Tenant),
-                    StringComparison.OrdinalIgnoreCase));
+            if (string.IsNullOrWhiteSpace(tenant))
+            {
+                if (!_executionContext.CanSaveWithoutTenant ||
+                    !string.IsNullOrWhiteSpace(model.Tenant))
+                {
+                    throw new InvalidOperationException("Tenant is required.");
+                }
 
-            filters.Add(
-                builder.Eq(
-                    tenantColumn.ColumnName,
-                    tenant));
+                // Tenantless bootstrap writes must match only tenantless records.
+                // Never omit this predicate: Code may be reused across tenants.
+                filters.Add(builder.Eq(
+                    metadata.TenantColumn?.ColumnName ?? nameof(DBModel.Tenant),
+                    BsonNull.Value));
+            }
+            else
+            {
+                var tenantColumn = metadata.Columns.First(
+                    column => string.Equals(
+                        column.PropertyName,
+                        nameof(DBModel.Tenant),
+                        StringComparison.OrdinalIgnoreCase));
+
+                filters.Add(builder.Eq(tenantColumn.ColumnName, tenant));
+            }
+
+
         }
 
         if (metadata.ConcurrencyEnabled)
