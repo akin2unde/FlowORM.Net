@@ -28,7 +28,7 @@ public abstract class DBModel
     }
 
     /// <summary>Globally unique business code.</summary>
-    public virtual string Code
+    public string Code
     {
         get;
 
@@ -136,5 +136,21 @@ public abstract class DBModel
 
     }
     = new Dictionary<string, ExtensionValue>(StringComparer.OrdinalIgnoreCase);
+    /// <summary>GenerateNumbers.</summary>
+
+    public static string GenerateNumbers(int n)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(n);
+
+        return RandomNumberGenerator.GetString("0123456789", n);
+    }
+    /// <summary>GenerateString.</summary>
+
+    public static string GenerateString(int n)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(n);
+
+        return RandomNumberGenerator.GetString("ABCDEFGHIJKLMNOPQRSTUVWXYZ", n);
+    }
 
 }

@@ -1,5 +1,7 @@
 using FlowORM.Net.Services;
 using System.Dynamic;
+using System.Reflection;
+using FlowORM.Net.Attributes;
 
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -87,6 +89,12 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
         CancellationToken cancellationToken = default)
         where T : DBModel
     {
+        if (NeedsReferenceSearch<T>(search))
+        {
+            var results = await ExecuteReferenceSearch<T>(search, 0, 1, cancellationToken);
+            return results.FirstOrDefault();
+        }
+
         return await Col<T>()
             .Find(Filter<T>(search))
             .Sort(Sort<T>(search))
@@ -127,6 +135,11 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
         if (limit < 0)
         {
             throw new ArgumentOutOfRangeException(nameof(limit));
+        }
+
+        if (NeedsReferenceSearch<T>(search))
+        {
+            return await ExecuteReferenceSearch<T>(search, skip, limit, cancellationToken);
         }
 
         var query = Col<T>()
@@ -271,7 +284,19 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
     }
 
     /// <inheritdoc />
-    public Task<long> Count<T>(SearchParam p, CancellationToken ct = default) where T : DBModel => Col<T>().CountDocumentsAsync(Filter<T>(p), cancellationToken: ct);
+    public async Task<long> Count<T>(SearchParam p, CancellationToken ct = default) where T : DBModel
+    {
+        if (NeedsReferenceSearch<T>(p))
+        {
+            var pipeline = BuildReferencePipeline<T>(p);
+            pipeline.Add(new BsonDocument("$count", "total"));
+            var result = await _db.GetCollection<BsonDocument>(_m.GetMetadata<T>().TableName)
+                .Aggregate<BsonDocument>(pipeline).FirstOrDefaultAsync(ct);
+            return result is null ? 0 : result["total"].ToInt64();
+        }
+
+        return await Col<T>().CountDocumentsAsync(Filter<T>(p), cancellationToken: ct);
+    }
 
     /// <inheritdoc />
     public async Task<object?> Sum<T>(string field, SearchParam search, CancellationToken cancellationToken = default) where T : DBModel
@@ -914,6 +939,128 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
         return _db.GetCollection<T>(
             metadata.TableName);
     }
+    private bool NeedsReferenceSearch<T>(SearchParam search) where T : DBModel =>
+        !string.IsNullOrWhiteSpace(search.Search) &&
+        (search.SearchReferences || search.SearchFields.Any(f => f.Contains('.')));
+
+    private async Task<IReadOnlyList<T>> ExecuteReferenceSearch<T>(
+        SearchParam search, int skip, int limit, CancellationToken ct)
+        where T : DBModel
+    {
+        var pipeline = BuildReferencePipeline<T>(search);
+        var sort = new BsonDocument();
+        var metadata = _m.GetMetadata<T>();
+        foreach (var order in search.OrderBy)
+        {
+            var column = metadata.PersistedColumns.FirstOrDefault(c =>
+                c.PropertyName.Equals(order.Field, StringComparison.OrdinalIgnoreCase));
+            if (column is null) throw new InvalidOperationException($"Invalid sort field '{order.Field}'.");
+            sort[column.ColumnName] = order.Descending ? -1 : 1;
+        }
+        if (sort.ElementCount == 0) sort[nameof(DBModel.Code)] = 1;
+        pipeline.Add(new BsonDocument("$sort", sort));
+        if (skip > 0) pipeline.Add(new BsonDocument("$skip", skip));
+        if (limit > 0) pipeline.Add(new BsonDocument("$limit", limit));
+        var documents = await _db.GetCollection<BsonDocument>(metadata.TableName)
+            .Aggregate<BsonDocument>(pipeline).ToListAsync(ct);
+        return documents.Select(document => BsonSerializer.Deserialize<T>(document)).ToArray();
+    }
+
+    private List<BsonDocument> BuildReferencePipeline<T>(SearchParam search) where T : DBModel
+    {
+        var metadata = _m.GetMetadata<T>();
+        var noText = search.Clone();
+        noText.Search = null;
+        var pipeline = new List<BsonDocument>
+        {
+            new("$match", BuildDocumentFilter(metadata, noText))
+        };
+        var matches = new BsonArray();
+        var regex = new BsonRegularExpression(Regex.Escape(search.Search!), "i");
+        foreach (var column in metadata.SearchableColumns)
+        {
+            if (search.SearchFields.Count == 0 ||
+                search.SearchFields.Contains(column.PropertyName, StringComparer.OrdinalIgnoreCase))
+                matches.Add(new BsonDocument(column.ColumnName, regex));
+        }
+
+        var referenceIndex = 0;
+        foreach (var local in metadata.PersistedColumns)
+        {
+            var reference = local.Property.GetCustomAttribute<ReferenceAttribute>();
+            if (reference is null) continue;
+            var target = _m.GetMetadata(reference.Model);
+            var requested = search.SearchFields
+                .Where(f => f.StartsWith(target.ModelName + ".", StringComparison.OrdinalIgnoreCase))
+                .Select(f => f[(target.ModelName.Length + 1)..]).ToArray();
+            if (!search.SearchReferences && requested.Length == 0) continue;
+            var fields = requested.Length > 0 ? requested : reference.SearchFields;
+            if (fields.Length == 0) continue;
+            var foreign = target.PersistedColumns.FirstOrDefault(c =>
+                c.PropertyName.Equals(reference.ForeignField, StringComparison.OrdinalIgnoreCase))
+                ?? throw new InvalidOperationException($"Invalid reference key '{reference.ForeignField}'.");
+            var referenceMatches = new BsonArray();
+            foreach (var field in fields)
+            {
+                if (field.Contains('.')) throw new NotSupportedException("Nested reference searches are not supported.");
+                var searchable = target.SearchableColumns.FirstOrDefault(c =>
+                    c.PropertyName.Equals(field, StringComparison.OrdinalIgnoreCase))
+                    ?? throw new InvalidOperationException($"'{field}' is not a searchable reference field.");
+                referenceMatches.Add(new BsonDocument(searchable.ColumnName, regex));
+            }
+            var alias = "__flowRef" + referenceIndex++;
+            var conditions = new BsonArray
+            {
+                new BsonDocument("$eq", new BsonArray { "$" + foreign.ColumnName, "$$localCode" }),
+                new BsonDocument("$ne", new BsonArray { "$$localCode", BsonNull.Value }),
+                new BsonDocument("$ne", new BsonArray { "$$localCode", "" })
+            };
+            var variables = new BsonDocument("localCode", "$" + local.ColumnName);
+            if (_o.MultiTenancy.Enabled && metadata.TenantScoped && target.TenantScoped)
+            {
+                variables.Add("localTenant", "$" + metadata.TenantColumn!.ColumnName);
+                conditions.Add(new BsonDocument("$eq", new BsonArray
+                {
+                    "$" + target.TenantColumn!.ColumnName, "$$localTenant"
+                }));
+            }
+            var joinedFilters = new BsonArray
+            {
+                new BsonDocument("$expr", new BsonDocument("$and", conditions)),
+                new BsonDocument("$or", referenceMatches)
+            };
+            if (!target.HardDelete && !search.IncludeDeleted)
+            {
+                var deleted = target.PersistedColumns.First(c =>
+                    c.PropertyName.Equals(nameof(DBModel.DeletedAt), StringComparison.OrdinalIgnoreCase));
+                joinedFilters.Add(new BsonDocument(deleted.ColumnName, BsonNull.Value));
+            }
+            pipeline.Add(new BsonDocument("$lookup", new BsonDocument
+            {
+                { "from", target.TableName }, { "let", variables },
+                { "pipeline", new BsonArray
+                    {
+                        new BsonDocument("$match", new BsonDocument("$and", joinedFilters)),
+                        new BsonDocument("$limit", 1)
+                    }
+                },
+                { "as", alias }
+            }));
+            matches.Add(new BsonDocument(alias + ".0", new BsonDocument("$exists", true)));
+        }
+        if (matches.Count == 0)
+        {
+            pipeline.Add(new BsonDocument("$match", new BsonDocument("_id", new BsonDocument("$exists", false))));
+        }
+        else
+        {
+            pipeline.Add(new BsonDocument("$match", new BsonDocument("$or", matches)));
+        }
+        foreach (var alias in Enumerable.Range(0, referenceIndex))
+            pipeline.Add(new BsonDocument("$unset", "__flowRef" + alias));
+        return pipeline;
+    }
+
     private FilterDefinition<T> Filter<T>(SearchParam p) where T : DBModel
     {
         var b = Builders<T>.Filter;
@@ -951,6 +1098,26 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
 
         }
         var basef = fs.Count == 0 ? b.Empty : (p.Condition == SearchCondition.Or ? b.Or(fs) : b.And(fs));
+
+        if (_executionContext.HasReadScope)
+        {
+            var metadata = _m.GetMetadata<T>();
+            var filters = new List<FilterDefinition<T>> { basef };
+
+            if (_o.MultiTenancy.Enabled && metadata.TenantScoped && !_executionContext.ReadAcrossTenants)
+            {
+                var tenant = _executionContext.ReadTenant ?? _t.GetTenant()
+                    ?? throw new InvalidOperationException("A tenant is required for this read.");
+                filters.Add(b.Eq(x => x.Tenant, tenant));
+            }
+
+            if (!metadata.HardDelete && !p.IncludeDeleted)
+            {
+                filters.Add(b.Eq(x => x.DeletedAt, null));
+            }
+
+            return b.And(filters);
+        }
 
         return Scoped<T>(basef, p.IncludeDeleted);
 
@@ -1132,10 +1299,13 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
             var tenantColumn = metadata.TenantColumn
                 ?? throw new InvalidOperationException(
                     $"Model '{metadata.ModelName}' has no tenant column.");
-            var tenant = _t.GetTenant()
-                ?? throw new InvalidOperationException(
-                    $"Tenant is required for model '{metadata.ModelName}'.");
-            scoped.Add(new BsonDocument(tenantColumn.ColumnName, tenant));
+            if (!_executionContext.ReadAcrossTenants)
+            {
+                var tenant = _executionContext.ReadTenant ?? _t.GetTenant()
+                    ?? throw new InvalidOperationException(
+                        $"Tenant is required for model '{metadata.ModelName}'.");
+                scoped.Add(new BsonDocument(tenantColumn.ColumnName, tenant));
+            }
         }
 
         if (!metadata.HardDelete && !search.IncludeDeleted)
@@ -1313,7 +1483,14 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
             var tenantColumn = metadata.TenantColumn
                 ?? throw new InvalidOperationException(
                     $"Model '{metadata.ModelName}' has no tenant column.");
-            var tenant = _t.GetTenant()
+            if (_executionContext.ReadAcrossTenants)
+            {
+                throw new NotSupportedException(
+                    "Cross-tenant joined reads require tenant-correlated join predicates. " +
+                    "Use a non-joined read until tenant-correlated joins are implemented.");
+            }
+
+            var tenant = _executionContext.ReadTenant ?? _t.GetTenant()
                 ?? throw new InvalidOperationException(
                     $"Tenant is required for joined model '{metadata.ModelName}'.");
 

@@ -1499,3 +1499,89 @@ See the repository license for licensing information.
 ### Audit trail behavior
 
 Set `options.AuditTrail.Enabled = true` to persist `DBAuditTrail` entries to the `__DBAuditTrail` table/collection when typed models are inserted, updated or deleted. Audit entries are written through the same database provider and transaction as the original write. `[DisableAudit]` excludes a model, while `[DoNotAudit]` excludes individual properties from the JSON snapshot. `IncludeNewValues` controls snapshots for inserts and updates. **Historical `OldData` is not reconstructed by this implementation**, and hard deletes record the action without a new-value snapshot. Ensure the audit table is included in schema migration before the first audited write, especially if automatic migration is disabled.
+
+
+## Scoped tenant operations
+
+FlowORM provides narrowly scoped tenant overrides. These scopes restore the previous
+state after the callback completes, including when it throws. They are async-flow-local.
+
+```csharp
+// Bootstrap: only Save may omit the tenant.
+await repository.RunSaveWithoutTenant(async db =>
+{
+    await db.Save(tenant);
+});
+
+// Privileged read of one tenant (authorization is your application's responsibility).
+var invoices = await repository.RunReadForTenant(
+    "TEN-001",
+    async db => await db.Select<Invoice>());
+
+// Privileged read of every tenant.
+var allInvoices = await repository.RunReadAcrossTenants(
+    async db => await db.Select<Invoice>());
+```
+
+`RunWithoutTenant` remains available as a compatibility alias for the save-only
+scope. Read scopes affect normal typed repository reads (`Select`, `SelectSingle`,
+`Count`, and `Sum`), not saves. Attempting to save inside a read scope throws.
+Never expose the administrative read scopes to untrusted callers: FlowORM does
+not infer a super-admin role or authorize these methods automatically.
+
+**Limitations:** Runtime-entity queries and SQL/Mongo join paths are not yet
+fully covered by the new administrative read scopes. MongoDB refuses a
+cross-tenant joined read rather than risk joining different tenants incorrectly.
+For now, use these scopes for ordinary typed model queries without joins.
+
+
+## Code identity and automatic indexing
+
+Every `DBModel` inherits a non-virtual `Code` identity property. Do not redeclare it with `new`: model registration rejects hidden `Code` properties to prevent ambiguous provider mappings. To customize generated codes, use the existing class-level `[DBCode(Prefix = "CUS", Length = 12)]` attribute (or the global `CodeGeneration` options). These settings control generation, not the identity column's mapping.
+
+**No `[Index]` or `[Unique]` annotation is required on `Code`.** SQL Server creates/maintains the primary key on `Code` for global models, or `(Tenant, Code)` for tenant-scoped models; MongoDB manages an equivalent unique index. The compound key allows the same code to exist in different tenants, while preventing duplicates within one tenant. The SQL primary key already provides an index, so adding another index on the same identity columns would be redundant.
+
+```csharp
+[DBCode(Prefix = "CUS", Length = 12)]
+public sealed class Customer : DBModel
+{
+    public string Name { get; set; } = string.Empty;
+}
+```
+
+Use `[Index]` for additional query fields (for example, a frequently searched customer name or an invoice's `CustomerCode`). Before applying unique constraints to existing databases, resolve any pre-existing duplicate identity values.
+
+
+## Reference-aware search (SQL Server preview)
+
+A one-level relationship can be declared on a reference code:
+
+```csharp
+public class Invoice : DBModel
+{
+    [Reference(typeof(Customer), nameof(Customer.Code),
+        SearchFields = [nameof(Customer.Name), nameof(Customer.Email)])]
+    public string? CustomerCode { get; set; }
+}
+
+var results = await repository.Select<Invoice>(new SearchParam
+{
+    Search = "Ada",
+    SearchReferences = true
+});
+```
+
+`SearchReferences` defaults to false, so normal reads do not perform extra reference lookups.
+SQL Server uses a correlated `EXISTS` search, preserving invoices with missing customer codes
+when the invoice's own fields match. Tenant-scoped models match on both reference code
+and tenant, even under `RunReadAcrossTenants`. Reference matches do not hydrate the
+related model. Only one level is supported.
+
+**Current limitation:** MongoDB reference-aware search is not implemented in this preview;
+requests are rejected explicitly. This preview supports reference text searches but not
+reference-field filter operators. Do not publish as a cross-provider feature yet.
+
+
+### MongoDB reference-aware searching
+
+MongoDB uses an opt-in `$lookup` pipeline for one-level `[Reference]` search. `SearchReferences = true` searches configured reference fields, while `SearchFields = ["Customer.Name"]` explicitly requests that field. Normal searches use `Find` without lookup. A null, empty, or unmatched `CustomerCode` does not remove an invoice that matches its own fields. Multi-tenant lookups match both the referenced code and tenant when both models are tenant-scoped, including `RunReadAcrossTenants`. The pipeline is shared by `Select`, `SelectSingle`, and `Count`; joined results are not hydrated into model properties. Administrative scopes must be authorized by the calling application.

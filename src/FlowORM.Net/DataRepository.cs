@@ -243,6 +243,45 @@ public sealed class DataRepository(
     }
 
     /// <inheritdoc />
+    public Task RunSaveWithoutTenant(Func<IDataRepository, Task> action) => RunWithoutTenant(action);
+
+    /// <inheritdoc />
+    public Task<TResult> RunSaveWithoutTenant<TResult>(Func<IDataRepository, Task<TResult>> action) =>
+        RunWithoutTenant(action);
+
+    /// <inheritdoc />
+    public async Task RunReadForTenant(string tenant, Func<IDataRepository, Task> action)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        using var scope = execution.BeginReadForTenant(tenant);
+        await action(this);
+    }
+
+    /// <inheritdoc />
+    public async Task<TResult> RunReadForTenant<TResult>(string tenant, Func<IDataRepository, Task<TResult>> action)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        using var scope = execution.BeginReadForTenant(tenant);
+        return await action(this);
+    }
+
+    /// <inheritdoc />
+    public async Task RunReadAcrossTenants(Func<IDataRepository, Task> action)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        using var scope = execution.BeginReadAcrossTenants();
+        await action(this);
+    }
+
+    /// <inheritdoc />
+    public async Task<TResult> RunReadAcrossTenants<TResult>(Func<IDataRepository, Task<TResult>> action)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        using var scope = execution.BeginReadAcrossTenants();
+        return await action(this);
+    }
+
+    /// <inheritdoc />
     public async Task<T> Save<T>(T model, CancellationToken cancellationToken = default) where T : DBModel
     {
         var result = await Save(new[] { model }, cancellationToken, 1);
@@ -252,6 +291,11 @@ public sealed class DataRepository(
     /// <inheritdoc />
     public async Task<IReadOnlyList<T>> Save<T>(IEnumerable<T> models, CancellationToken cancellationToken = default, int? batch = null) where T : DBModel
     {
+        if (execution.HasReadScope)
+        {
+            throw new InvalidOperationException("Save is not permitted in a read-only tenant scope.");
+        }
+
         var items = models.ToList();
         if (items.Count == 0) return items;
         Prepare(items);

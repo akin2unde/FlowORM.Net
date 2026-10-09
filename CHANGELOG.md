@@ -1,3 +1,16 @@
+## Unreleased
+
+- Make inherited `DBModel.Code` non-virtual and reject hidden `Code` declarations during metadata registration.
+- Document automatic SQL Server primary-key and MongoDB unique identity indexing, including tenant-scoped compound identity.
+- Document existing `[DBCode]` configuration instead of introducing a duplicate code-options attribute.
+
+## Unreleased
+
+- Added `RunSaveWithoutTenant` as an explicit name for the existing save-only scope.
+- Added read-only `RunReadForTenant` and `RunReadAcrossTenants` scopes for ordinary typed queries.
+- Added async-local scope restoration and guarded Save in read scopes.
+- Documented authorization and joined-query limitations.
+
 
 ## 2026-10-04 - FlowORM rename
 
@@ -109,3 +122,7 @@
 - Added runtime JSON dotted-path resolution such as `Details.Lines.Product`; MongoDB uses native dotted paths and SQL Server uses JSON scalar path expressions where applicable.
 - Added server-side runtime bulk `Update(entity, SearchParam, values)` and `Delete(entity, SearchParam)` operations; empty-filter bulk mutations are rejected to prevent accidental whole-entity changes.
 - Added early database-name validation. MongoDB can resolve the database from the connection string; SQL Server validates `Initial Catalog`/`Database` when a full connection string is used.
+
+- Preview: added `[Reference]` and opt-in SQL Server reference-aware text search; MongoDB reference searches explicitly unsupported pending implementation.
+
+- Add opt-in MongoDB one-level reference-aware text search using tenant-safe `$lookup` for typed Select, SelectSingle, and Count.

@@ -19,6 +19,9 @@ public sealed class SearchParamNormalizer(
         var normalized = search?.Clone() ?? new SearchParam();
         var modelMetadata = metadata.GetMetadata<T>();
 
+        if (normalized.SearchFields.Any(field => field.Count(c => c == '.') > 1))
+            throw new NotSupportedException("Nested reference searches are not supported.");
+
         foreach (var filter in normalized.Filters)
         {
             if (filter.Operator is SearchOperator.IsNull or SearchOperator.IsNotNull)

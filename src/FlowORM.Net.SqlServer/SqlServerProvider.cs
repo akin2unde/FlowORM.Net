@@ -1,3 +1,4 @@
+using FlowORM.Net.Attributes;
 using FlowORM.Net.Services;
 using System.Data;
 using System.Collections;
@@ -23,6 +24,7 @@ public sealed class SqlServerProvider : IDatabaseProvider, IDBQuery
     private readonly FlowOrmOptions _options;
     private readonly IDBMetadataProvider _metadata;
     private readonly ITenantProvider _tenant;
+    private readonly FlowOrmExecutionContext _readExecution;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="SqlServerProvider"/> class.
@@ -39,6 +41,7 @@ public sealed class SqlServerProvider : IDatabaseProvider, IDBQuery
         _options = options;
         _metadata = metadata;
         _tenant = executionContext?.Wrap(tenant) ?? tenant;
+        _readExecution = executionContext ?? new FlowOrmExecutionContext();
     }
 
     /// <inheritdoc />
@@ -1022,20 +1025,46 @@ public sealed class SqlServerProvider : IDatabaseProvider, IDBQuery
             }
 
             var columns = searchableColumns.ToArray();
+            var searchParameter = AddParameter(parameters, $"%{search.Search}%");
+            var searchConditions = columns.Select(column =>
+                $"[t].[{EscapeIdentifier(column.ColumnName)}] LIKE {searchParameter}").ToList();
 
-            if (columns.Length > 0)
+            foreach (var column in metadata.PersistedColumns)
             {
-                var searchParameter = AddParameter(
-                    parameters,
-                    $"%{search.Search}%");
+                var reference = column.Property.GetCustomAttributes(typeof(ReferenceAttribute), true)
+                    .Cast<ReferenceAttribute>().SingleOrDefault();
+                if (reference is null) continue;
 
-                var searchConditions = columns.Select(
-                    column =>
-                        $"[t].[{EscapeIdentifier(column.ColumnName)}] LIKE {searchParameter}");
-
-                userConditions.Add(
-                    $"({string.Join(" OR ", searchConditions)})");
+                var target = _metadata.GetMetadata(reference.Model);
+                var requested = search.SearchFields
+                    .Where(field => field.StartsWith(target.ModelName + ".", StringComparison.OrdinalIgnoreCase))
+                    .Select(field => field[(target.ModelName.Length + 1)..]).ToArray();
+                if (!search.SearchReferences && requested.Length == 0) continue;
+                var fields = requested.Length > 0 ? requested : reference.SearchFields;
+                var foreign = target.PersistedColumns.FirstOrDefault(c =>
+                    c.PropertyName.Equals(reference.ForeignField, StringComparison.OrdinalIgnoreCase))
+                    ?? throw new InvalidOperationException($"Invalid reference key '{reference.ForeignField}'.");
+                if (fields.Length == 0) continue;
+                var terms = new List<string>();
+                foreach (var field in fields)
+                {
+                    if (field.Contains('.')) throw new NotSupportedException("Nested reference searches are not supported.");
+                    var referencedColumn = target.SearchableColumns.FirstOrDefault(c =>
+                        c.PropertyName.Equals(field, StringComparison.OrdinalIgnoreCase))
+                        ?? throw new InvalidOperationException($"'{field}' is not a searchable reference field.");
+                    terms.Add($"[r].[{EscapeIdentifier(referencedColumn.ColumnName)}] LIKE {searchParameter}");
+                }
+                var tenantMatch = _options.MultiTenancy.Enabled && metadata.TenantScoped && target.TenantScoped
+                    ? $" AND [r].[{EscapeIdentifier(target.TenantColumn!.ColumnName)}] = [t].[{EscapeIdentifier(metadata.TenantColumn!.ColumnName)}]"
+                    : string.Empty;
+                searchConditions.Add($"EXISTS (SELECT 1 FROM [{EscapeIdentifier(target.TableName)}] AS [r] " +
+                    $"WHERE [t].[{EscapeIdentifier(column.ColumnName)}] IS NOT NULL " +
+                    $"AND [t].[{EscapeIdentifier(column.ColumnName)}] <> '' " +
+                    $"AND [r].[{EscapeIdentifier(foreign.ColumnName)}] = [t].[{EscapeIdentifier(column.ColumnName)}]" +
+                    tenantMatch + $" AND ({string.Join(" OR ", terms)}))");
             }
+            if (searchConditions.Count > 0)
+                userConditions.Add($"({string.Join(" OR ", searchConditions)})");
         }
 
         var requiredConditions = new List<string>();
@@ -1047,20 +1076,24 @@ public sealed class SqlServerProvider : IDatabaseProvider, IDBQuery
                 ?? throw new InvalidOperationException(
                     $"Multi-tenancy is enabled, but model '{metadata.ModelName}' has no tenant column.");
 
-            var tenantCode = _tenant.GetTenant();
+            var tenantCode = _readExecution.ReadTenant ?? _tenant.GetTenant();
 
-            if (string.IsNullOrWhiteSpace(tenantCode))
+            if (_readExecution.ReadAcrossTenants)
+            {
+                // Administrative read: do not constrain the root model to one tenant.
+            }
+            else if (string.IsNullOrWhiteSpace(tenantCode))
             {
                 throw new InvalidOperationException(
                     "A tenant code is required for the current database operation.");
             }
 
-            var tenantParameter = AddParameter(
-                parameters,
-                tenantCode);
-
-            requiredConditions.Add(
-                $"[t].[{EscapeIdentifier(tenantColumn.ColumnName)}] = {tenantParameter}");
+            if (!_readExecution.ReadAcrossTenants)
+            {
+                var tenantParameter = AddParameter(parameters, tenantCode);
+                requiredConditions.Add(
+                    $"[t].[{EscapeIdentifier(tenantColumn.ColumnName)}] = {tenantParameter}");
+            }
         }
 
         if (!metadata.HardDelete && !search.IncludeDeleted)

@@ -316,6 +316,24 @@ public interface IDataRepository
     /// </remarks>
     Task RunWithoutTenant(Func<IDataRepository, Task> action);
 
+    /// <summary>Runs saves without requiring a tenant, restoring validation afterward.</summary>
+    Task RunSaveWithoutTenant(Func<IDataRepository, Task> action);
+
+    /// <summary>Runs saves without requiring a tenant, returning the callback result.</summary>
+    Task<TResult> RunSaveWithoutTenant<TResult>(Func<IDataRepository, Task<TResult>> action);
+
+    /// <summary>Runs read operations for a specified tenant. Caller must authorize this privilege.</summary>
+    Task RunReadForTenant(string tenant, Func<IDataRepository, Task> action);
+
+    /// <summary>Runs read operations for a specified tenant and returns a result. Caller must authorize this privilege.</summary>
+    Task<TResult> RunReadForTenant<TResult>(string tenant, Func<IDataRepository, Task<TResult>> action);
+
+    /// <summary>Runs read operations across tenants. Caller must authorize this privilege.</summary>
+    Task RunReadAcrossTenants(Func<IDataRepository, Task> action);
+
+    /// <summary>Runs read operations across tenants and returns a result. Caller must authorize this privilege.</summary>
+    Task<TResult> RunReadAcrossTenants<TResult>(Func<IDataRepository, Task<TResult>> action);
+
     /// <summary>
     /// Runs a special save scope in which tenant-scoped models may be saved when no tenant can be resolved.
     /// </summary>

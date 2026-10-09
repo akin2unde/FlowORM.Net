@@ -53,6 +53,18 @@ public sealed class DBMetadataProvider : IDBMetadataProvider
 
     private DBModelMetadata Build(Type type)
     {
+        // Code is the identity defined by DBModel. Hiding it creates ambiguous
+        // reflection and serialization mappings across database providers.
+        var declaredCode = type.GetProperty(
+            nameof(DBModel.Code),
+            BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly);
+        if (declaredCode is not null)
+        {
+            throw new InvalidOperationException(
+                $"Model '{type.FullName}' must not declare a new Code property. " +
+                "Use [DBCode] on the model to configure code generation.");
+        }
+
         var codeAttribute = type.GetCustomAttribute<DBCodeAttribute>(true);
         var autoDeleteAttribute = type.GetCustomAttribute<AutoDeleteAttribute>(true);
         var tenantScoped = !type.IsDefined(typeof(GlobalAttribute), true);

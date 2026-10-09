@@ -8,6 +8,46 @@ namespace FlowORM.Net.Services;
 public sealed class FlowOrmExecutionContext
 {
     private readonly AsyncLocal<int> _saveWithoutTenantDepth = new();
+    private readonly AsyncLocal<ReadScopeState?> _readScope = new();
+
+    /// <summary>True while an administrative read scope is active.</summary>
+    public bool HasReadScope => _readScope.Value is not null;
+
+    /// <summary>True when reading records from all tenants.</summary>
+    public bool ReadAcrossTenants => _readScope.Value?.AcrossTenants == true;
+
+    /// <summary>Tenant selected for administrative reads, if any.</summary>
+    public string? ReadTenant => _readScope.Value?.Tenant;
+
+    internal IDisposable BeginReadForTenant(string tenant)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(tenant);
+        return BeginRead(new ReadScopeState(false, tenant));
+    }
+
+    internal IDisposable BeginReadAcrossTenants() => BeginRead(new ReadScopeState(true, null));
+
+    private IDisposable BeginRead(ReadScopeState next)
+    {
+        var previous = _readScope.Value;
+        _readScope.Value = next;
+        return new ReadScopeHandle(this, previous);
+    }
+
+    private sealed record ReadScopeState(bool AcrossTenants, string? Tenant);
+
+    private sealed class ReadScopeHandle(FlowOrmExecutionContext owner, ReadScopeState? previous) : IDisposable
+    {
+        private bool _disposed;
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            owner._readScope.Value = previous;
+        }
+    }
+
 
     internal string? TenantOverride { get; set; }
 

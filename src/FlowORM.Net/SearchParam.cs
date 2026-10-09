@@ -4,6 +4,9 @@ namespace FlowORM.Net.Query;
 public sealed class SearchParam
 {
 
+    /// <summary>Include configured one-level references in generic text search; defaults to false.</summary>
+    public bool SearchReferences { get; set; }
+
     /// <summary>Generic text.</summary>
     public string? Search
     {
@@ -78,6 +81,7 @@ public sealed class SearchParam
         var x = new SearchParam
         {
             Search = Search,
+            SearchReferences = SearchReferences,
             Condition = Condition,
             IncludeDeleted = IncludeDeleted
         }
