@@ -28,11 +28,13 @@ public sealed class DefaultAuditService(
         {
             return;
         }
-
-        if (!Enum.TryParse<AuditAction>(action, true, out var auditAction))
+        var auditAction = action switch
         {
-            throw new ArgumentException($"Unknown audit action '{action}'.", nameof(action));
-        }
+            nameof(DataState.New) => AuditAction.Insert,
+            nameof(DataState.Changed) => AuditAction.Update,
+            nameof(DataState.Removed) => AuditAction.Delete,
+            _ => Enum.Parse<AuditAction>(action, true)
+        };
 
         metadata.RegisterModel(typeof(DBAuditTrail));
 

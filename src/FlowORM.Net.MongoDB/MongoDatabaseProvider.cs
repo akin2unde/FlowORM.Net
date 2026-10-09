@@ -833,12 +833,12 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
         if (_o.MultiTenancy.Enabled
             && metadata.TenantScoped)
         {
-            var tenant = _t.GetTenant();
-
+            var tenant = !string.IsNullOrWhiteSpace(model.Tenant)
+                ? model.Tenant
+                : _t.GetTenant();
             if (string.IsNullOrWhiteSpace(tenant))
             {
-                if (!_executionContext.CanSaveWithoutTenant ||
-                    !string.IsNullOrWhiteSpace(model.Tenant))
+                if (!_executionContext.CanSaveWithoutTenant)
                 {
                     throw new InvalidOperationException("Tenant is required.");
                 }
@@ -851,13 +851,9 @@ public sealed class MongoDatabaseProvider : IDatabaseProvider, IDBQuery
             }
             else
             {
-                var tenantColumn = metadata.Columns.First(
-                    column => string.Equals(
-                        column.PropertyName,
-                        nameof(DBModel.Tenant),
-                        StringComparison.OrdinalIgnoreCase));
-
-                filters.Add(builder.Eq(tenantColumn.ColumnName, tenant));
+                filters.Add(builder.Eq(
+         metadata.TenantColumn?.ColumnName ?? nameof(DBModel.Tenant),
+         tenant));
             }
 
 
